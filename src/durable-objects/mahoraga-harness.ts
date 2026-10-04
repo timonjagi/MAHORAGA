@@ -1292,11 +1292,20 @@ export class MahoragaHarness extends DurableObject<Env> {
   }
 
   public trackLLMCost(model: string, tokensIn: number, tokensOut: number): number {
+    // USD per 1M tokens. Keys may be prefixed ("provider/model", AI SDK) or bare.
     const pricing: Record<string, { input: number; output: number }> = {
+      // OpenAI
       "gpt-4o": { input: 2.5, output: 10 },
       "gpt-4o-mini": { input: 0.15, output: 0.6 },
+      // Google Gemini (AI SDK, "google/<model>")
+      "google/gemini-3.5-flash": { input: 1.5, output: 9 },
+      "google/gemini-3.8-flash": { input: 0.75, output: 3.75 },
+      "google/gemini-2.5-flash-lite": { input: 0.3, output: 2.5 },
+      "gemini-3.5-flash": { input: 1.5, output: 9 },
+      "gemini-3.8-flash": { input: 0.75, output: 3.75 },
     };
-    const rates = pricing[model] ?? pricing["gpt-4o"]!;
+    const bareModel = model.includes("/") ? model.split("/").slice(1).join("/") : model;
+    const rates = pricing[model] ?? pricing[bareModel] ?? pricing["gpt-4o"]!;
     const cost = (tokensIn * rates.input + tokensOut * rates.output) / 1_000_000;
 
     this.state.costTracker.total_usd += cost;

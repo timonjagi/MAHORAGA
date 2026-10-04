@@ -1,11 +1,53 @@
 import { useState } from 'react'
 import type { Config } from '../types'
 import { Panel } from './Panel'
+import { ModelCombobox, type ModelOptionGroup } from './ModelCombobox'
 
 interface SettingsModalProps {
   config: Config
   onSave: (config: Config) => void
   onClose: () => void
+}
+
+function researchModelGroups(provider?: string): ModelOptionGroup[] {
+  if (!provider || provider === 'openai-raw') {
+    return [{ label: 'OpenAI', options: ['gpt-4o-mini', 'gpt-3.5-turbo'] }]
+  }
+  if (provider === 'cloudflare-gateway') {
+    return [
+      { label: 'OpenAI', options: ['openai/gpt-4o-mini', 'openai/gpt-5-mini'] },
+      { label: 'Anthropic', options: ['anthropic/claude-haiku-4-5'] },
+      { label: 'Google', options: ['google-ai-studio/gemini-3.8-flash', 'google-ai-studio/gemini-3.5-flash'] },
+      { label: 'DeepSeek', options: ['deepseek/deepseek-chat'] },
+    ]
+  }
+  return [
+    { label: 'OpenAI', options: ['openai/gpt-4o-mini', 'openai/gpt-3.5-turbo'] },
+    { label: 'Anthropic', options: ['anthropic/claude-3-5-haiku-latest'] },
+    { label: 'Google', options: ['google/gemini-3.8-flash', 'google/gemini-3.5-flash', 'google/gemini-2.5-flash-lite'] },
+    { label: 'DeepSeek', options: ['deepseek/deepseek-chat'] },
+  ]
+}
+
+function analystModelGroups(provider?: string): ModelOptionGroup[] {
+  if (!provider || provider === 'openai-raw') {
+    return [{ label: 'OpenAI', options: ['gpt-5.2-2025-12-11', 'gpt-4o', 'gpt-4o-mini'] }]
+  }
+  if (provider === 'cloudflare-gateway') {
+    return [
+      { label: 'OpenAI', options: ['openai/gpt-5.2', 'openai/gpt-5', 'openai/gpt-4o'] },
+      { label: 'Anthropic', options: ['anthropic/claude-opus-4-5', 'anthropic/claude-sonnet-4-5'] },
+      { label: 'Google', options: ['google-ai-studio/gemini-3.8-flash', 'google-ai-studio/gemini-3.1-pro-preview'] },
+      { label: 'xAI', options: ['grok/grok-4.1-fast-reasoning', 'grok/grok-code-fast-1'] },
+    ]
+  }
+  return [
+    { label: 'OpenAI', options: ['openai/gpt-4o', 'openai/o1', 'openai/o1-mini'] },
+    { label: 'Anthropic', options: ['anthropic/claude-3-7-sonnet-latest', 'anthropic/claude-sonnet-4-0', 'anthropic/claude-opus-4-1'] },
+    { label: 'Google', options: ['google/gemini-3.8-flash', 'google/gemini-3.5-flash', 'google/gemini-3.1-pro-preview'] },
+    { label: 'xAI', options: ['xai/grok-4', 'xai/grok-3', 'xai/grok-4-fast-reasoning'] },
+    { label: 'DeepSeek', options: ['deepseek/deepseek-reasoner', 'deepseek/deepseek-chat'] },
+  ]
 }
 
 export function SettingsModal({ config, onSave, onClose }: SettingsModalProps) {
@@ -32,7 +74,12 @@ export function SettingsModal({ config, onSave, onClose }: SettingsModalProps) {
   const handleSave = async () => {
     setSaving(true)
     try {
-      await onSave(localConfig)
+      const configToSave: Config = {
+        ...localConfig,
+        // Backend requires a non-empty analyst model; fall back to the research model.
+        llm_analyst_model: localConfig.llm_analyst_model || localConfig.llm_model,
+      }
+      await onSave(configToSave)
       onClose()
     } finally {
       setSaving(false)
@@ -240,126 +287,23 @@ export function SettingsModal({ config, onSave, onClose }: SettingsModalProps) {
             <div className="grid grid-cols-2 gap-4">
               <div>
                 <label className="hud-label block mb-1">Research Model (cheap)</label>
-                <select
-                  className="hud-input w-full"
+                <ModelCombobox
                   value={localConfig.llm_model}
-                  onChange={e => handleChange('llm_model', e.target.value)}
-                >
-                  {(!localConfig.llm_provider || localConfig.llm_provider === 'openai-raw') && (
-                    <>
-                      <option value="gpt-4o-mini">gpt-4o-mini</option>
-                      <option value="gpt-3.5-turbo">gpt-3.5-turbo</option>
-                    </>
-                  )}
-                  {localConfig.llm_provider === 'ai-sdk' && (
-                    <>
-                      <optgroup label="OpenAI">
-                        <option value="openai/gpt-4o-mini">gpt-4o-mini</option>
-                        <option value="openai/gpt-3.5-turbo">gpt-3.5-turbo</option>
-                      </optgroup>
-                      <optgroup label="Anthropic">
-                        <option value="anthropic/claude-3-5-haiku-latest">claude-3.5-haiku</option>
-                      </optgroup>
-                      <optgroup label="Google">
-                        <option value="google/gemini-2.5-flash">gemini-2.5-flash</option>
-                        <option value="google/gemini-2.0-flash">gemini-2.0-flash</option>
-                      </optgroup>
-                      <optgroup label="DeepSeek">
-                        <option value="deepseek/deepseek-chat">deepseek-chat</option>
-                      </optgroup>
-                    </>
-                  )}
-                  {localConfig.llm_provider === 'cloudflare-gateway' && (
-                    <>
-                      <optgroup label="OpenAI">
-                        <option value="openai/gpt-4o-mini">gpt-4o-mini</option>
-                        <option value="openai/gpt-5-mini">gpt-5-mini</option>
-                      </optgroup>
-                      <optgroup label="Anthropic">
-                        <option value="anthropic/claude-haiku-4-5">claude-haiku-4.5</option>
-                      </optgroup>
-                      <optgroup label="Google AI Studio">
-                        <option value="google-ai-studio/gemini-2.5-flash">gemini-2.5-flash</option>
-                      </optgroup>
-                      <optgroup label="DeepSeek">
-                        <option value="deepseek/deepseek-chat">deepseek-chat</option>
-                      </optgroup>
-                    </>
-                  )}
-                  {localConfig.llm_provider &&
-                    !['openai-raw', 'ai-sdk', 'cloudflare-gateway'].includes(localConfig.llm_provider) && (
-                      <option value={localConfig.llm_model}>{localConfig.llm_model}</option>
-                    )}
-                </select>
+                  placeholder="e.g. google/gemini-3.8-flash"
+                  groups={researchModelGroups(localConfig.llm_provider)}
+                  onChange={(v) => handleChange('llm_model', v)}
+                />
+                <p className="text-[9px] text-hud-text-dim mt-1">Pick a model or choose Custom…. AI SDK uses <code>provider/model</code>.</p>
               </div>
               <div>
                 <label className="hud-label block mb-1">Analyst Model (smart)</label>
-                <select
-                  className="hud-input w-full"
-                  value={localConfig.llm_analyst_model || 'gpt-4o'}
-                  onChange={e => handleChange('llm_analyst_model', e.target.value)}
-                >
-                  {(!localConfig.llm_provider || localConfig.llm_provider === 'openai-raw') && (
-                    <>
-                      <option value="gpt-5.2-2025-12-11">GPT-5.2 (best)</option>
-                      <option value="gpt-4o">gpt-4o</option>
-                      <option value="gpt-4o-mini">gpt-4o-mini (cheaper)</option>
-                    </>
-                  )}
-                  {localConfig.llm_provider === 'ai-sdk' && (
-                    <>
-                      <optgroup label="OpenAI">
-                        <option value="openai/gpt-4o">gpt-4o</option>
-                        <option value="openai/o1">o1 (reasoning)</option>
-                        <option value="openai/o1-mini">o1-mini</option>
-                      </optgroup>
-                      <optgroup label="Anthropic">
-                        <option value="anthropic/claude-3-7-sonnet-latest">claude-3.7-sonnet (best)</option>
-                        <option value="anthropic/claude-sonnet-4-0">claude-sonnet-4</option>
-                        <option value="anthropic/claude-opus-4-1">claude-opus-4</option>
-                      </optgroup>
-                      <optgroup label="Google">
-                        <option value="google/gemini-2.5-pro">gemini-2.5-pro</option>
-                        <option value="google/gemini-3-pro-preview">gemini-3-pro (preview)</option>
-                      </optgroup>
-                      <optgroup label="xAI">
-                        <option value="xai/grok-4">grok-4</option>
-                        <option value="xai/grok-3">grok-3</option>
-                        <option value="xai/grok-4-fast-reasoning">grok-4-fast-reasoning</option>
-                      </optgroup>
-                      <optgroup label="DeepSeek">
-                        <option value="deepseek/deepseek-reasoner">deepseek-reasoner</option>
-                        <option value="deepseek/deepseek-chat">deepseek-chat</option>
-                      </optgroup>
-                    </>
-                  )}
-                  {localConfig.llm_provider === 'cloudflare-gateway' && (
-                    <>
-                      <optgroup label="OpenAI">
-                        <option value="openai/gpt-5.2">gpt-5.2 (best)</option>
-                        <option value="openai/gpt-5">gpt-5</option>
-                        <option value="openai/gpt-4o">gpt-4o</option>
-                      </optgroup>
-                      <optgroup label="Anthropic">
-                        <option value="anthropic/claude-opus-4-5">claude-opus-4.5 (best)</option>
-                        <option value="anthropic/claude-sonnet-4-5">claude-sonnet-4.5</option>
-                      </optgroup>
-                      <optgroup label="Google AI Studio">
-                        <option value="google-ai-studio/gemini-2.5-pro">gemini-2.5-pro</option>
-                      </optgroup>
-                      <optgroup label="Grok">
-                        <option value="grok/grok-4.1-fast-reasoning">grok-4.1-fast-reasoning</option>
-                        <option value="grok/grok-code-fast-1">grok-code-fast-1</option>
-                      </optgroup>
-                    </>
-                  )}
-                  {localConfig.llm_provider &&
-                    !['openai-raw', 'ai-sdk', 'cloudflare-gateway'].includes(localConfig.llm_provider) && (
-                      <option value={localConfig.llm_analyst_model || 'gpt-4o'}>
-                        {localConfig.llm_analyst_model || 'gpt-4o'}
-                      </option>
-                    )}
-                </select>
+                <ModelCombobox
+                  value={localConfig.llm_analyst_model || ''}
+                  placeholder="e.g. google/gemini-3.8-flash"
+                  groups={analystModelGroups(localConfig.llm_provider)}
+                  onChange={(v) => handleChange('llm_analyst_model', v)}
+                />
+                <p className="text-[9px] text-hud-text-dim mt-1">Leave blank to use the research model.</p>
               </div>
             </div>
           </div>
