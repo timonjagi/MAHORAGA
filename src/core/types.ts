@@ -28,6 +28,7 @@ export interface Signal {
   // Optional enrichment fields (gatherers add what they need)
   upvotes?: number;
   comments?: number;
+  mentions?: number;
   quality_score?: number;
   subreddits?: string[];
   best_flair?: string | null;

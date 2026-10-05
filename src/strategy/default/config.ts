@@ -22,6 +22,8 @@ export const SOURCE_CONFIG = {
     sec_8k: 0.95,
     sec_4: 0.9,
     sec_13f: 0.7,
+    news: 0.9,
+    apewisdom: 0.85,
   },
   flairMultipliers: {
     DD: 1.5,

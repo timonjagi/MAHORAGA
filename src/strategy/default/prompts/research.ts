@@ -15,18 +15,49 @@ export const researchSignalPrompt: ResearchSignalPromptBuilder = (
   symbol: string,
   sentiment: number,
   sources: string[],
-  price: number
-): PromptTemplate => ({
-  system: "You are a stock research analyst. Be skeptical of hype. Output valid JSON only.",
-  user: `Should we BUY this stock based on social sentiment and fundamentals?
+  price: number,
+  _ctx,
+  technicals
+): PromptTemplate => {
+  const attentionOnly = sources.every((s) => s.startsWith("apewisdom"));
+
+  const techBlock = technicals
+    ? `
+TECHNICALS (daily):
+- Trend: ${technicals.trend} (20/50 SMA)
+- Direction read: ${technicals.direction}
+- RSI(14): ${technicals.rsi_14 !== null ? technicals.rsi_14.toFixed(1) : "n/a"}
+- MACD histogram: ${technicals.macd_histogram !== null ? technicals.macd_histogram.toFixed(3) : "n/a"}
+- Price vs 50-SMA: ${technicals.above_sma50 === null ? "n/a" : technicals.above_sma50 ? "above" : "below"}
+- Relative volume: ${technicals.relative_volume !== null ? technicals.relative_volume.toFixed(2) + "x" : "n/a"}
+- Active signals: ${technicals.notes.join("; ") || "none"}`
+    : "\nTECHNICALS: unavailable";
+
+  const sentimentBlock = attentionOnly
+    ? `SENTIMENT: NONE — this is an ATTENTION signal (${sources.join(", ")} mention volume only).
+No directional sentiment is available. You MUST rely on the technicals and news to decide direction.`
+    : `SENTIMENT: ${(sentiment * 100).toFixed(0)}% bullish (sources: ${sources.join(", ")})`;
+
+  return {
+    system:
+      "You are a stock research analyst for a LONG-ONLY account. Be skeptical of hype. Output valid JSON only.",
+    user: `Should we BUY this stock? You may only go long.
 
 SYMBOL: ${symbol}
-SENTIMENT: ${(sentiment * 100).toFixed(0)}% bullish (sources: ${sources.join(", ")})
+${sentimentBlock}
 
 CURRENT DATA:
 - Price: $${price}
+${techBlock}
 
-Evaluate if this is a good entry. Consider: Is the sentiment justified? Is it too late (already pumped)? Any red flags?
+Rules:
+- Only recommend BUY when direction is supported. For attention-only signals (no sentiment),
+  require a bullish technical trend or clearly positive news.
+- Do NOT buy into a bearish technical trend (price below 50-SMA with falling MACD) just because
+  social attention is high — high attention can mark a crowded top.
+- If technicals and sentiment conflict, prefer SKIP or WAIT.
+
+Evaluate if this is a good long entry. Consider: Is the sentiment justified? Is it too late (already pumped)? Any red flags?
 
 JSON response:
 {
@@ -37,8 +68,9 @@ JSON response:
   "red_flags": ["any concerns"],
   "catalysts": ["positive factors"]
 }`,
-  maxTokens: 1024,
-});
+    maxTokens: 1024,
+  };
+};
 
 /**
  * Position research prompt — risk assessment for a held position.

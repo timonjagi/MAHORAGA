@@ -15,8 +15,9 @@
 
 import type { Strategy } from "../types";
 import { DEFAULT_CONFIG } from "./config";
+import { apeWisdomGatherer } from "./gatherers/apewisdom";
 import { cryptoGatherer } from "./gatherers/crypto";
-import { redditGatherer } from "./gatherers/reddit";
+import { newsGatherer } from "./gatherers/news";
 import { secGatherer } from "./gatherers/sec";
 import { stocktwitsGatherer } from "./gatherers/stocktwits";
 import { analyzeSignalsPrompt } from "./prompts/analyst";
@@ -30,7 +31,16 @@ export const defaultStrategy: Strategy = {
   configSchema: null,
   defaultConfig: DEFAULT_CONFIG,
 
-  gatherers: [stocktwitsGatherer, redditGatherer, cryptoGatherer, secGatherer],
+  gatherers: [
+    stocktwitsGatherer,
+    apeWisdomGatherer,
+    newsGatherer,
+    cryptoGatherer,
+    secGatherer,
+    // redditGatherer intentionally NOT wired: Reddit's unauthenticated JSON API
+    // is 403 (May 2026) and it only burns subrequests. Re-add it here once Reddit
+    // OAuth credentials are configured. ApeWisdom supplies Reddit attention.
+  ],
 
   prompts: {
     researchSignal: researchSignalPrompt,

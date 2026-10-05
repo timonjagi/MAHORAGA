@@ -102,3 +102,107 @@ export function detectSentiment(text: string): number {
   if (total === 0) return 0;
   return (bull - bear) / total;
 }
+
+/**
+ * Keyword-based sentiment scoring tuned for financial NEWS headlines
+ * (analyst actions, price targets, earnings, M&A). Returns [-1, +1].
+ *
+ * Uses word-boundary matching (unlike the WSB-tuned `detectSentiment`) to avoid
+ * false positives like "low" matching "slow" or "gain" matching "again".
+ */
+export function detectNewsSentiment(text: string): number {
+  const lower = text.toLowerCase();
+
+  const bullish = [
+    "beat",
+    "beats",
+    "upgrade",
+    "upgrades",
+    "raised",
+    "raises",
+    "raise",
+    "outperform",
+    "overweight",
+    "buy",
+    "record",
+    "surge",
+    "surges",
+    "soar",
+    "soars",
+    "rally",
+    "rallies",
+    "jump",
+    "jumps",
+    "gain",
+    "gains",
+    "growth",
+    "strong",
+    "tops",
+    "expands",
+    "approval",
+    "approved",
+    "wins",
+    "partnership",
+    "buyback",
+    "dividend",
+    "bullish",
+    "high",
+    "higher",
+    "profit",
+    "profitable",
+  ];
+  const bearish = [
+    "miss",
+    "misses",
+    "downgrade",
+    "downgrades",
+    "lowered",
+    "lowers",
+    "cut",
+    "cuts",
+    "underperform",
+    "underweight",
+    "sell",
+    "lawsuit",
+    "probe",
+    "investigation",
+    "recall",
+    "warn",
+    "warns",
+    "warning",
+    "weak",
+    "weakness",
+    "decline",
+    "declines",
+    "fall",
+    "falls",
+    "drop",
+    "drops",
+    "plunge",
+    "plunges",
+    "slump",
+    "slumps",
+    "loss",
+    "losses",
+    "bankruptcy",
+    "layoff",
+    "layoffs",
+    "concerns",
+    "bearish",
+    "low",
+    "lower",
+    "risk",
+    "risks",
+    "delay",
+    "delays",
+  ];
+
+  let bull = 0;
+  let bear = 0;
+  for (const w of bullish) if (new RegExp(`\\b${w}\\b`).test(lower)) bull++;
+  for (const w of bearish) if (new RegExp(`\\b${w}\\b`).test(lower)) bear++;
+
+  const total = bull + bear;
+  if (total === 0) return 0;
+  return (bull - bear) / total;
+}

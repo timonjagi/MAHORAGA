@@ -305,4 +305,52 @@ describe("Alpaca Market Data Provider", () => {
       expect(snapshots.GOOGL!.latest_trade.price).toBe(140.0);
     });
   });
+
+  describe("getNews", () => {
+    const mockArticle = {
+      id: 1,
+      headline: "Nvidia beats earnings expectations",
+      summary: "Strong demand",
+      created_at: "2024-01-15T10:00:00Z",
+      symbols: ["NVDA"],
+      source: "benzinga",
+      url: "https://example.com/1",
+    };
+
+    it("fetches and maps news articles", async () => {
+      mockClient.dataRequest.mockResolvedValueOnce({ news: [mockArticle] });
+
+      const news = await provider.getNews({ symbols: ["NVDA"], limit: 10 });
+
+      expect(mockClient.dataRequest).toHaveBeenCalledWith(
+        "GET",
+        "/v1beta1/news",
+        expect.objectContaining({ symbols: "NVDA", limit: 10, sort: "desc" })
+      );
+      expect(news).toHaveLength(1);
+      expect(news[0]!.headline).toBe("Nvidia beats earnings expectations");
+      expect(news[0]!.symbols).toEqual(["NVDA"]);
+    });
+
+    it("caps the limit at Alpaca's maximum of 50", async () => {
+      mockClient.dataRequest.mockResolvedValueOnce({ news: [] });
+
+      await provider.getNews({ limit: 500 });
+
+      expect(mockClient.dataRequest).toHaveBeenCalledWith(
+        "GET",
+        "/v1beta1/news",
+        expect.objectContaining({ limit: 50 })
+      );
+    });
+
+    it("omits the symbols param when no symbols are given", async () => {
+      mockClient.dataRequest.mockResolvedValueOnce({ news: [] });
+
+      await provider.getNews();
+
+      const params = mockClient.dataRequest.mock.calls[0]![2] as Record<string, unknown>;
+      expect(params.symbols).toBeUndefined();
+    });
+  });
 });

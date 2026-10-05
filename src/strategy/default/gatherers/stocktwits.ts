@@ -51,14 +51,16 @@ async function gatherStockTwits(ctx: StrategyContext): Promise<Signal[]> {
     );
     if (!trendingRes) {
       ctx.log("StockTwits", "cloudflare_blocked", {
-        message: "StockTwits API blocked by Cloudflare - using Reddit only",
+        message: "StockTwits API unavailable (Cloudflare bot protection or subrequest limit) - using ApeWisdom/News/SEC",
       });
       return [];
     }
     const trendingData = (await trendingRes.json()) as { symbols?: Array<{ symbol: string }> };
     const trending = trendingData.symbols || [];
 
-    for (const sym of trending.slice(0, 15)) {
+    // Keep the per-cycle fan-out small: Workers cap outbound requests per
+    // invocation, and StockTwits is frequently blocked anyway.
+    for (const sym of trending.slice(0, 5)) {
       try {
         const streamRes = await fetchWithRetry(
           `https://api.stocktwits.com/api/2/streams/symbol/${encodeURIComponent(sym.symbol)}.json?limit=30`,

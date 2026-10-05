@@ -271,3 +271,57 @@ export function detectSignals(technicals: TechnicalIndicators): Signal[] {
 
   return signals;
 }
+
+/**
+ * Build a compact, LLM-friendly technical summary from raw bars.
+ * Returns null when there aren't enough bars to compute anything meaningful.
+ */
+export function summarizeTechnicals(
+  symbol: string,
+  bars: Bar[]
+): {
+  direction: "bullish" | "bearish" | "neutral";
+  trend: "up" | "down" | "sideways" | "unknown";
+  rsi_14: number | null;
+  macd_histogram: number | null;
+  above_sma50: boolean | null;
+  relative_volume: number | null;
+  notes: string[];
+} | null {
+  if (bars.length < 20) return null;
+
+  const t = computeTechnicals(symbol, bars);
+  const signals = detectSignals(t);
+
+  let bull = 0;
+  let bear = 0;
+  for (const s of signals) {
+    if (s.direction === "bullish") bull += s.strength;
+    else if (s.direction === "bearish") bear += s.strength;
+  }
+  const direction: "bullish" | "bearish" | "neutral" =
+    bull - bear > 0.15 ? "bullish" : bear - bull > 0.15 ? "bearish" : "neutral";
+
+  let trend: "up" | "down" | "sideways" | "unknown" = "unknown";
+  if (t.sma_20 !== null && t.sma_50 !== null) {
+    const spread = (t.sma_20 - t.sma_50) / t.price;
+    trend = spread > 0.01 ? "up" : spread < -0.01 ? "down" : "sideways";
+  }
+
+  const aboveSma50 = t.sma_50 !== null ? t.price > t.sma_50 : null;
+
+  const notes = signals.slice(0, 4).map((s) => s.description);
+  if (t.relative_volume !== null) {
+    notes.push(`Relative volume ${t.relative_volume.toFixed(2)}x`);
+  }
+
+  return {
+    direction,
+    trend,
+    rsi_14: t.rsi_14,
+    macd_histogram: t.macd?.histogram ?? null,
+    above_sma50: aboveSma50,
+    relative_volume: t.relative_volume,
+    notes,
+  };
+}

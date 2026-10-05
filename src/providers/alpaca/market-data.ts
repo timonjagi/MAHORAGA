@@ -37,6 +37,31 @@ interface AlpacaSnapshotsResponse {
   [symbol: string]: AlpacaSnapshot;
 }
 
+interface AlpacaNewsArticle {
+  id: number;
+  headline: string;
+  summary: string;
+  created_at: string;
+  symbols: string[];
+  source: string;
+  url: string;
+}
+
+interface AlpacaNewsResponse {
+  news: AlpacaNewsArticle[];
+  next_page_token?: string | null;
+}
+
+export interface NewsArticle {
+  id: number;
+  headline: string;
+  summary: string;
+  created_at: string;
+  symbols: string[];
+  source: string;
+  url: string;
+}
+
 interface AlpacaSnapshot {
   latestTrade: {
     p: number;
@@ -212,6 +237,31 @@ export class AlpacaMarketDataProvider implements MarketDataProvider {
       result[symbol] = parseSnapshot(symbol, snapshot);
     }
     return result;
+  }
+
+  /**
+   * Recent market news (Benzinga et al.) via Alpaca's News API.
+   * Optional comma-separated symbol filter; max 50 articles per request.
+   */
+  async getNews(params?: { symbols?: string[]; limit?: number; start?: string }): Promise<NewsArticle[]> {
+    const limit = Math.min(Math.max(params?.limit ?? 50, 1), 50);
+    const response = await this.client.dataRequest<AlpacaNewsResponse>("GET", "/v1beta1/news", {
+      symbols: params?.symbols?.length ? params.symbols.join(",") : undefined,
+      limit,
+      sort: "desc",
+      start: params?.start,
+      exclude_contentless: "true",
+    });
+
+    return (response.news || []).map((n) => ({
+      id: n.id,
+      headline: n.headline,
+      summary: n.summary,
+      created_at: n.created_at,
+      symbols: n.symbols || [],
+      source: n.source,
+      url: n.url,
+    }));
   }
 }
 

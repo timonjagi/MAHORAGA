@@ -95,8 +95,28 @@ export type ResearchSignalPromptBuilder = (
   sentiment: number,
   sources: string[],
   price: number,
-  ctx: StrategyContext
+  ctx: StrategyContext,
+  technicals?: TechnicalsSummary
 ) => PromptTemplate;
+
+/**
+ * Compact, LLM-friendly technical read for a symbol.
+ * Used to give the research step directional context so attention-only signals
+ * (e.g. ApeWisdom mention spikes) don't get bought against the trend.
+ */
+export interface TechnicalsSummary {
+  /** Net directional read derived from indicator signals */
+  direction: "bullish" | "bearish" | "neutral";
+  /** Trend from 20/50 SMA relationship */
+  trend: "up" | "down" | "sideways" | "unknown";
+  rsi_14: number | null;
+  macd_histogram: number | null;
+  /** Whether price is above the 50-day SMA */
+  above_sma50: boolean | null;
+  relative_volume: number | null;
+  /** Human-readable bullet list of active technical signals */
+  notes: string[];
+}
 
 export type ResearchPositionPromptBuilder = (
   symbol: string,

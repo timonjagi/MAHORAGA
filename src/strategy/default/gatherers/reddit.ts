@@ -1,5 +1,11 @@
 /**
  * Reddit gatherer — sentiment from r/wallstreetbets, r/stocks, r/investing, r/options.
+ *
+ * STATUS: Reddit's unauthenticated JSON API (`.json`) was closed in May 2026 and
+ * now returns HTTP 403 from all clients. This gatherer therefore yields 0 signals
+ * and is left in place as the slot for true Reddit text sentiment once OAuth
+ * credentials (client id/secret) are available. Until then, the ApeWisdom
+ * gatherer provides Reddit *attention* (mention volume) with no direction.
  */
 
 import type { Signal } from "../../../core/types";
@@ -34,7 +40,12 @@ async function gatherReddit(ctx: StrategyContext): Promise<Signal[]> {
       const res = await fetch(`https://www.reddit.com/r/${sub}/hot.json?limit=25`, {
         headers: { "User-Agent": "Mahoraga/2.0" },
       });
-      if (!res.ok) continue;
+      if (!res.ok) {
+        // Reddit closed unauthenticated .json access in May 2026 (403). Log it
+        // instead of failing silently; OAuth is required to restore this source.
+        ctx.log("Reddit", "subreddit_unavailable", { subreddit: sub, status: res.status });
+        continue;
+      }
       const data = (await res.json()) as {
         data?: {
           children?: Array<{

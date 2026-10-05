@@ -23,6 +23,7 @@ import type { Env } from "../env.d";
 import { getDefaultPolicyConfig } from "../policy/config";
 import { createAlpacaProviders } from "../providers/alpaca";
 import { createLLMProvider } from "../providers/llm/factory";
+import { summarizeTechnicals } from "../providers/technicals";
 import type { Account, LLMProvider, MarketClock, Position } from "../providers/types";
 import type { AgentConfig } from "../schemas/agent-config";
 import { safeValidateAgentConfig } from "../schemas/agent-config";
@@ -386,19 +387,29 @@ export class MahoragaHarness extends DurableObject<Env> {
   private buildSocialSnapshot(
     signals: Signal[]
   ): Map<string, { volume: number; sentiment: number; sources: Set<string> }> {
-    const aggregated = new Map<string, { volume: number; sentimentNumerator: number; sources: Set<string> }>();
+    const aggregated = new Map<
+      string,
+      { volume: number; sentimentNumerator: number; directionalVolume: number; sources: Set<string> }
+    >();
 
     for (const sig of signals) {
       if (!sig.symbol) continue;
       const volume = Number.isFinite(sig.volume) && sig.volume > 0 ? sig.volume : 1;
+      const sentiment = Number.isFinite(sig.sentiment) ? sig.sentiment : 0;
 
       let entry = aggregated.get(sig.symbol);
       if (!entry) {
-        entry = { volume: 0, sentimentNumerator: 0, sources: new Set() };
+        entry = { volume: 0, sentimentNumerator: 0, directionalVolume: 0, sources: new Set() };
         aggregated.set(sig.symbol, entry);
       }
       entry.volume += volume;
-      entry.sentimentNumerator += (Number.isFinite(sig.sentiment) ? sig.sentiment : 0) * volume;
+      // Attention-only signals (sentiment === 0) contribute volume but must NOT
+      // dilute directional sentiment with a fake neutral. Average sentiment only
+      // over signals that actually carry direction.
+      if (sentiment !== 0) {
+        entry.sentimentNumerator += sentiment * volume;
+        entry.directionalVolume += volume;
+      }
       entry.sources.add(sig.source_detail || sig.source);
     }
 
@@ -406,7 +417,7 @@ export class MahoragaHarness extends DurableObject<Env> {
     for (const [symbol, entry] of aggregated) {
       out.set(symbol, {
         volume: entry.volume,
-        sentiment: entry.volume > 0 ? entry.sentimentNumerator / entry.volume : 0,
+        sentiment: entry.directionalVolume > 0 ? entry.sentimentNumerator / entry.directionalVolume : 0,
         sources: entry.sources,
       });
     }
@@ -488,20 +499,44 @@ export class MahoragaHarness extends DurableObject<Env> {
 
     const allSignals = this.state.signalCache;
     const notHeld = allSignals.filter((s) => !heldSymbols.has(s.symbol));
-    const aboveThreshold = notHeld.filter((s) => s.raw_sentiment >= this.state.config.min_sentiment_score);
-    const candidates = aboveThreshold.sort((a, b) => b.sentiment - a.sentiment).slice(0, limit);
+
+    // Directional signals: sentiment clears the threshold.
+    const minSentiment = this.state.config.min_sentiment_score;
+    const directional = notHeld
+      .filter((s) => s.raw_sentiment >= minSentiment)
+      .sort((a, b) => b.sentiment - a.sentiment);
+
+    // Attention-only signals (e.g. ApeWisdom): no sentiment, but high mention
+    // volume. These surface candidates; direction is decided by news + technicals.
+    const directionalSymbols = new Set(directional.map((s) => s.symbol));
+    const ATTENTION_MIN_MENTIONS = 10;
+    const attention = notHeld
+      .filter(
+        (s) =>
+          s.raw_sentiment === 0 &&
+          !directionalSymbols.has(s.symbol) &&
+          (s.mentions ?? s.volume ?? 0) >= ATTENTION_MIN_MENTIONS
+      )
+      .sort((a, b) => (b.mentions ?? b.volume ?? 0) - (a.mentions ?? a.volume ?? 0));
+
+    const candidates = [...directional, ...attention].slice(0, limit);
 
     if (candidates.length === 0) {
       this.log("SignalResearch", "no_candidates", {
         total_signals: allSignals.length,
         not_held: notHeld.length,
-        above_threshold: aboveThreshold.length,
-        min_sentiment: this.state.config.min_sentiment_score,
+        directional: directional.length,
+        attention: attention.length,
+        min_sentiment: minSentiment,
       });
       return [];
     }
 
-    this.log("SignalResearch", "researching_signals", { count: candidates.length });
+    this.log("SignalResearch", "researching_signals", {
+      count: candidates.length,
+      directional: directional.length,
+      attention: attention.length,
+    });
 
     const aggregated = new Map<string, { symbol: string; sentiment: number; sources: string[] }>();
     for (const sig of candidates) {
@@ -538,15 +573,26 @@ export class MahoragaHarness extends DurableObject<Env> {
       const alpaca = createAlpacaProviders(this.env);
       const crypto = isCryptoSymbol(symbol, this.state.config.crypto_symbols || []);
       let price = 0;
+      let technicals;
       if (crypto) {
         const snapshot = await alpaca.marketData.getCryptoSnapshot(normalizeCryptoSymbol(symbol)).catch(() => null);
         price = snapshot?.latest_trade?.price || snapshot?.latest_quote?.ask_price || 0;
       } else {
         const snapshot = await alpaca.marketData.getSnapshot(symbol).catch(() => null);
         price = snapshot?.latest_trade?.price || snapshot?.latest_quote?.ask_price || 0;
+
+        // Daily bars for a compact technical read (feeds directional context to
+        // the LLM so attention-only signals aren't bought against the trend).
+        try {
+          const start = new Date(Date.now() - 120 * 24 * 60 * 60 * 1000).toISOString();
+          const bars = await alpaca.marketData.getBars(symbol, "1Day", { start, limit: 100, adjustment: "split" });
+          technicals = summarizeTechnicals(symbol, bars) ?? undefined;
+        } catch {
+          technicals = undefined;
+        }
       }
 
-      const prompt = activeStrategy.prompts.researchSignal(symbol, sentiment, sources, price, ctx);
+      const prompt = activeStrategy.prompts.researchSignal(symbol, sentiment, sources, price, ctx, technicals);
 
       const response = await this._llm.complete({
         model: prompt.model || this.state.config.llm_model,
