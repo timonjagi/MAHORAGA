@@ -36,6 +36,7 @@ import {
   isTwitterEnabled,
 } from "../strategy/default/gatherers/twitter";
 import { isCryptoSymbol, normalizeCryptoSymbol } from "../strategy/default/helpers/crypto";
+import { classifySymbol, countGroupPositions } from "../strategy/default/helpers/groups";
 import { tickerCache } from "../strategy/default/helpers/ticker";
 import { runCryptoTrading } from "../strategy/default/rules/crypto-trading";
 import { findBestOptionsContract } from "../strategy/default/rules/options";
@@ -795,6 +796,64 @@ export class MahoragaHarness extends DurableObject<Env> {
   // ANALYST & TRADING — uses strategy selectEntries/selectExits + PolicyBroker
   // ============================================================================
 
+  /**
+   * Shared gate for every BUY path (signal research, analyst LLM, pre-market).
+   *
+   * Enforces the long-only direction rule and portfolio concentration caps:
+   *  1. EVERY buy must have a positive per-signal research verdict of BUY. If a
+   *     symbol has no research yet (e.g. the batch analyst invented it), research
+   *     is performed on demand. SKIP/WAIT — or unresearchable — vetoes the buy.
+   *     This closes the gap where the analyst LLM could buy names the research
+   *     never evaluated, and where it bought against a WAIT verdict.
+   *  2. No more than `max_positions_per_group` in one correlated group.
+   *
+   * Returns null when allowed, otherwise a human-readable block reason.
+   */
+  private async checkBuyGate(
+    ctx: StrategyContext,
+    symbol: string,
+    positions: Position[],
+    pendingGroupCounts: Map<string, number>
+  ): Promise<string | null> {
+    // 1. Direction: require an explicit BUY verdict.
+    let research = this.state.signalResearch[symbol];
+    if (!research) {
+      const signal = this.state.signalCache.find((s) => s.symbol === symbol);
+      if (!signal) {
+        return "no signal or research for symbol";
+      }
+      const fetched = await this.callSignalResearch(
+        ctx,
+        symbol,
+        signal.sentiment,
+        [signal.source_detail || signal.source]
+      );
+      research = fetched ?? undefined;
+    }
+
+    if (!research) {
+      return "research unavailable";
+    }
+    if (research.verdict !== "BUY") {
+      return `research verdict ${research.verdict} (confidence ${research.confidence})`;
+    }
+
+    // 2. Concentration: cap correlated positions.
+    const maxPerGroup = this.state.config.max_positions_per_group ?? 0;
+    if (maxPerGroup > 0) {
+      const group = classifySymbol(symbol);
+      if (group) {
+        const held = countGroupPositions(positions, group);
+        const pending = pendingGroupCounts.get(group) ?? 0;
+        if (held + pending >= maxPerGroup) {
+          return `group '${group}' at cap (${held + pending}/${maxPerGroup})`;
+        }
+      }
+    }
+
+    return null;
+  }
+
   private async runAnalyst(ctx: StrategyContext): Promise<void> {
     const [account, positions, clock] = await Promise.all([
       ctx.broker.getAccount(),
@@ -809,6 +868,10 @@ export class MahoragaHarness extends DurableObject<Env> {
 
     const heldSymbols = new Set(positions.map((p) => p.symbol));
     const socialSnapshot = this.getSocialSnapshotCache();
+    // Tracks group allocations made this cycle so multiple buys in the same
+    // correlated group are capped even before the broker reports positions.
+    const pendingGroupCounts = new Map<string, number>();
+    let pendingBuys = 0;
 
     // Strategy exit decisions
     const exits = activeStrategy.selectExits(ctx, positions, account);
@@ -825,7 +888,13 @@ export class MahoragaHarness extends DurableObject<Env> {
 
     for (const entry of entries) {
       if (heldSymbols.has(entry.symbol)) continue;
-      if (positions.length >= this.state.config.max_positions) break;
+      if (positions.length + pendingBuys >= this.state.config.max_positions) break;
+
+      const blockReason = await this.checkBuyGate(ctx, entry.symbol, positions, pendingGroupCounts);
+      if (blockReason) {
+        this.log("Analyst", "buy_blocked", { symbol: entry.symbol, reason: blockReason });
+        continue;
+      }
 
       let finalConfidence = entry.confidence;
 
@@ -860,6 +929,9 @@ export class MahoragaHarness extends DurableObject<Env> {
       const result = await ctx.broker.buy(entry.symbol, entry.notional, entry.reason);
       if (result) {
         heldSymbols.add(entry.symbol);
+        pendingBuys++;
+        const group = classifySymbol(entry.symbol);
+        if (group) pendingGroupCounts.set(group, (pendingGroupCounts.get(group) ?? 0) + 1);
         const originalSignal = this.state.signalCache.find((s) => s.symbol === entry.symbol);
         const aggregatedSocial = socialSnapshot[entry.symbol];
         this.state.positionEntries[entry.symbol] = {
@@ -913,9 +985,15 @@ export class MahoragaHarness extends DurableObject<Env> {
       }
 
       if (rec.action === "BUY") {
-        if (positions.length >= this.state.config.max_positions) continue;
+        if (positions.length + pendingBuys >= this.state.config.max_positions) continue;
         if (heldSymbols.has(rec.symbol)) continue;
         if (entrySymbols.has(rec.symbol)) continue;
+
+        const blockReason = await this.checkBuyGate(ctx, rec.symbol, positions, pendingGroupCounts);
+        if (blockReason) {
+          this.log("Analyst", "buy_blocked", { symbol: rec.symbol, reason: blockReason, source: "analyst_llm" });
+          continue;
+        }
 
         const sizePct = Math.min(20, this.state.config.position_size_pct_of_cash);
         const notional = Math.min(
@@ -929,6 +1007,9 @@ export class MahoragaHarness extends DurableObject<Env> {
           const originalSignal = this.state.signalCache.find((s) => s.symbol === rec.symbol);
           const aggregatedSocial = socialSnapshot[rec.symbol];
           heldSymbols.add(rec.symbol);
+          pendingBuys++;
+          const group = classifySymbol(rec.symbol);
+          if (group) pendingGroupCounts.set(group, (pendingGroupCounts.get(group) ?? 0) + 1);
           this.state.positionEntries[rec.symbol] = {
             symbol: rec.symbol,
             entry_time: Date.now(),
@@ -1049,6 +1130,8 @@ export class MahoragaHarness extends DurableObject<Env> {
 
     const heldSymbols = new Set(positions.map((p) => p.symbol));
     const socialSnapshot = this.getSocialSnapshotCache();
+    const pendingGroupCounts = new Map<string, number>();
+    let pendingBuys = 0;
 
     this.log("System", "executing_premarket_plan", {
       recommendations: this.state.premarketPlan.recommendations.length,
@@ -1065,7 +1148,13 @@ export class MahoragaHarness extends DurableObject<Env> {
     for (const rec of this.state.premarketPlan.recommendations) {
       if (rec.action === "BUY" && rec.confidence >= this.state.config.min_analyst_confidence) {
         if (heldSymbols.has(rec.symbol)) continue;
-        if (positions.length >= this.state.config.max_positions) break;
+        if (positions.length + pendingBuys >= this.state.config.max_positions) break;
+
+        const blockReason = await this.checkBuyGate(ctx, rec.symbol, positions, pendingGroupCounts);
+        if (blockReason) {
+          this.log("System", "premarket_buy_blocked", { symbol: rec.symbol, reason: blockReason });
+          continue;
+        }
 
         const sizePct = Math.min(20, this.state.config.position_size_pct_of_cash);
         const notional = Math.min(
@@ -1077,6 +1166,9 @@ export class MahoragaHarness extends DurableObject<Env> {
         const result = await ctx.broker.buy(rec.symbol, notional, `Pre-market plan: ${rec.reasoning}`);
         if (result) {
           heldSymbols.add(rec.symbol);
+          pendingBuys++;
+          const group = classifySymbol(rec.symbol);
+          if (group) pendingGroupCounts.set(group, (pendingGroupCounts.get(group) ?? 0) + 1);
           const originalSignal = this.state.signalCache.find((s) => s.symbol === rec.symbol);
           const aggregatedSocial = socialSnapshot[rec.symbol];
           this.state.positionEntries[rec.symbol] = {

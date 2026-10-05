@@ -141,6 +141,16 @@ export function SettingsModal({ config, onSave, onClose }: SettingsModalProps) {
                 />
               </div>
               <div>
+                <label className="hud-label block mb-1">Max per Group</label>
+                <input
+                  type="number"
+                  className="hud-input w-full"
+                  value={localConfig.max_positions_per_group ?? 2}
+                  onChange={e => handleChange('max_positions_per_group', Number(e.target.value))}
+                />
+                <p className="text-[9px] text-hud-text-dim mt-1">Cap correlated positions (e.g. Brazil, China, gold). 0 = off.</p>
+              </div>
+              <div>
                 <label className="hud-label block mb-1">Position Size (% of Cash)</label>
                 <input
                   type="number"

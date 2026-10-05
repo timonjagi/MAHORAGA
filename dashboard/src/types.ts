@@ -57,6 +57,7 @@ export interface Config {
   market_open_execute_window_minutes?: number
   max_position_value: number
   max_positions: number
+  max_positions_per_group?: number
   min_sentiment_score: number
   min_analyst_confidence: number
   take_profit_pct: number

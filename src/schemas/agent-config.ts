@@ -10,6 +10,9 @@ export const AgentConfigSchema = z
 
     max_position_value: z.number().positive().max(100000),
     max_positions: z.number().int().min(1).max(50),
+    /** Max concurrent positions in a single correlated group (country/commodity).
+     *  0 disables the cap. */
+    max_positions_per_group: z.number().int().min(0).max(50),
     min_sentiment_score: z.number().min(0).max(1),
     min_analyst_confidence: z.number().min(0).max(1),
 
