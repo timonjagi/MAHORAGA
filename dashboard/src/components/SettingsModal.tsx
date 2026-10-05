@@ -24,7 +24,7 @@ function researchModelGroups(provider?: string): ModelOptionGroup[] {
   return [
     { label: 'OpenAI', options: ['openai/gpt-4o-mini', 'openai/gpt-3.5-turbo'] },
     { label: 'Anthropic', options: ['anthropic/claude-3-5-haiku-latest'] },
-    { label: 'Google', options: ['google/gemini-3.8-flash', 'google/gemini-3.5-flash', 'google/gemini-2.5-flash-lite'] },
+    { label: 'Google', options: ['google/gemini-3.8-flash', 'google/gemini-3.5-flash', 'google/gemini-3.5-flash-lite', 'google/gemini-2.5-flash-lite'] },
     { label: 'DeepSeek', options: ['deepseek/deepseek-chat'] },
   ]
 }
@@ -44,7 +44,7 @@ function analystModelGroups(provider?: string): ModelOptionGroup[] {
   return [
     { label: 'OpenAI', options: ['openai/gpt-4o', 'openai/o1', 'openai/o1-mini'] },
     { label: 'Anthropic', options: ['anthropic/claude-3-7-sonnet-latest', 'anthropic/claude-sonnet-4-0', 'anthropic/claude-opus-4-1'] },
-    { label: 'Google', options: ['google/gemini-3.8-flash', 'google/gemini-3.5-flash', 'google/gemini-3.1-pro-preview'] },
+    { label: 'Google', options: ['google/gemini-3.8-flash', 'google/gemini-3.5-flash', 'google/gemini-3.5-flash-lite', 'google/gemini-3.1-pro-preview'] },
     { label: 'xAI', options: ['xai/grok-4', 'xai/grok-3', 'xai/grok-4-fast-reasoning'] },
     { label: 'DeepSeek', options: ['deepseek/deepseek-reasoner', 'deepseek/deepseek-chat'] },
   ]

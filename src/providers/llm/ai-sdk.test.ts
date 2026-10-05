@@ -4,6 +4,8 @@ import { ErrorCode } from "../../lib/errors";
 // Mock the AI SDK modules
 vi.mock("ai", () => ({
   generateText: vi.fn(),
+  wrapLanguageModel: vi.fn(({ model }: { model: unknown }) => model),
+  defaultSettingsMiddleware: vi.fn(() => ({ transformParams: async (p: unknown) => p })),
 }));
 
 vi.mock("@ai-sdk/openai", () => ({
@@ -32,10 +34,12 @@ import { createGoogleGenerativeAI } from "@ai-sdk/google";
 import { createOpenAI } from "@ai-sdk/openai";
 import { createXai } from "@ai-sdk/xai";
 // Import after mocks
-import { generateText } from "ai";
+import { defaultSettingsMiddleware, generateText, wrapLanguageModel } from "ai";
 import { AISDKProvider, createAISDKProvider, PROVIDER_MODELS, SUPPORTED_PROVIDERS } from "./ai-sdk";
 
 const mockGenerateText = generateText as ReturnType<typeof vi.fn>;
+const mockWrapLanguageModel = wrapLanguageModel as ReturnType<typeof vi.fn>;
+const mockDefaultSettingsMiddleware = defaultSettingsMiddleware as ReturnType<typeof vi.fn>;
 
 describe("AI SDK Provider", () => {
   beforeEach(() => {
@@ -301,6 +305,36 @@ describe("AI SDK Provider", () => {
           maxOutputTokens: 2048,
         })
       );
+    });
+
+    it("wraps the model with JSON response format when requested", async () => {
+      const provider = createAISDKProvider({
+        model: "openai/gpt-4o",
+        apiKeys: { openai: "sk-test" },
+      });
+
+      await provider.complete({
+        messages: [{ role: "user", content: "Test" }],
+        response_format: { type: "json_object" },
+      });
+
+      expect(mockDefaultSettingsMiddleware).toHaveBeenCalledWith({
+        settings: { responseFormat: { type: "json" } },
+      });
+      expect(mockWrapLanguageModel).toHaveBeenCalledOnce();
+    });
+
+    it("does not wrap the model when JSON format is not requested", async () => {
+      const provider = createAISDKProvider({
+        model: "openai/gpt-4o",
+        apiKeys: { openai: "sk-test" },
+      });
+
+      await provider.complete({
+        messages: [{ role: "user", content: "Test" }],
+      });
+
+      expect(mockWrapLanguageModel).not.toHaveBeenCalled();
     });
 
     it("throws PROVIDER_ERROR when provider not configured", async () => {

@@ -3,7 +3,8 @@ import { createDeepSeek } from "@ai-sdk/deepseek";
 import { createGoogleGenerativeAI } from "@ai-sdk/google";
 import { createOpenAI } from "@ai-sdk/openai";
 import { createXai } from "@ai-sdk/xai";
-import { generateText } from "ai";
+import { defaultSettingsMiddleware, generateText, wrapLanguageModel } from "ai";
+import type { LanguageModel } from "ai";
 import { createError, ErrorCode } from "../../lib/errors";
 import type { CompletionParams, CompletionResult, LLMProvider } from "../types";
 
@@ -116,8 +117,21 @@ export class AISDKProvider implements LLMProvider {
         );
       }
 
+      // Force JSON output at the model layer when requested. This maps to each
+      // provider's native mechanism (Google responseMimeType, OpenAI response_format,
+      // etc.), so callers get raw JSON without markdown fences.
+      let model: LanguageModel = provider(modelId);
+      if (params.response_format?.type === "json_object") {
+        model = wrapLanguageModel({
+          model,
+          middleware: defaultSettingsMiddleware({
+            settings: { responseFormat: { type: "json" } },
+          }),
+        });
+      }
+
       const result = await generateText({
-        model: provider(modelId),
+        model,
         messages: params.messages.map((msg) => ({
           role: msg.role,
           content: msg.content,

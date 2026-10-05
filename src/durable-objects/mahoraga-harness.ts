@@ -554,7 +554,7 @@ export class MahoragaHarness extends DurableObject<Env> {
           { role: "system", content: prompt.system },
           { role: "user", content: prompt.user },
         ],
-        max_tokens: prompt.maxTokens || 250,
+        max_tokens: prompt.maxTokens || 1024,
         temperature: 0.3,
         response_format: { type: "json_object" },
       });
@@ -568,14 +568,19 @@ export class MahoragaHarness extends DurableObject<Env> {
       }
 
       const content = response.content || "{}";
-      const analysis = JSON.parse(content.replace(/```json\n?|```/g, "").trim()) as {
+      const analysis = this.parseJsonObject<{
         verdict: "BUY" | "SKIP" | "WAIT";
         confidence: number;
         entry_quality: "excellent" | "good" | "fair" | "poor";
         reasoning: string;
         red_flags: string[];
         catalysts: string[];
-      };
+      }>(content);
+
+      if (!analysis) {
+        this.log("SignalResearch", "parse_error", { symbol, raw: content.slice(0, 200) });
+        return null;
+      }
 
       const result: ResearchResult = {
         symbol,
@@ -630,7 +635,7 @@ export class MahoragaHarness extends DurableObject<Env> {
           { role: "system", content: prompt.system },
           { role: "user", content: prompt.user },
         ],
-        max_tokens: prompt.maxTokens || 200,
+        max_tokens: prompt.maxTokens || 800,
         temperature: 0.3,
         response_format: { type: "json_object" },
       });
@@ -644,7 +649,16 @@ export class MahoragaHarness extends DurableObject<Env> {
       }
 
       const content = response.content || "{}";
-      const analysis = JSON.parse(content.replace(/```json\n?|```/g, "").trim());
+      const analysis = this.parseJsonObject<{
+        recommendation: string;
+        risk_level: string;
+        reasoning: string;
+        key_factors: string[];
+      }>(content);
+      if (!analysis) {
+        this.log("PositionResearch", "parse_error", { symbol: position.symbol, raw: content.slice(0, 200) });
+        return;
+      }
       this.state.positionResearch[position.symbol] = { ...analysis, timestamp: Date.now() };
       this.log("PositionResearch", "position_analyzed", {
         symbol: position.symbol,
@@ -685,7 +699,7 @@ export class MahoragaHarness extends DurableObject<Env> {
           { role: "system", content: prompt.system },
           { role: "user", content: prompt.user },
         ],
-        max_tokens: prompt.maxTokens || 800,
+        max_tokens: prompt.maxTokens || 2048,
         temperature: 0.4,
         response_format: { type: "json_object" },
       });
@@ -699,7 +713,7 @@ export class MahoragaHarness extends DurableObject<Env> {
       }
 
       const content = response.content || "{}";
-      const analysis = JSON.parse(content.replace(/```json\n?|```/g, "").trim()) as {
+      const analysis = this.parseJsonObject<{
         recommendations: Array<{
           action: "BUY" | "SELL" | "HOLD";
           symbol: string;
@@ -709,7 +723,12 @@ export class MahoragaHarness extends DurableObject<Env> {
         }>;
         market_summary: string;
         high_conviction_plays?: string[];
-      };
+      }>(content);
+
+      if (!analysis) {
+        this.log("Analyst", "parse_error", { raw: content.slice(0, 200) });
+        return { recommendations: [], market_summary: "Unparseable LLM response", high_conviction: [] };
+      }
 
       this.log("Analyst", "analysis_complete", {
         recommendations: analysis.recommendations?.length || 0,
@@ -1291,6 +1310,29 @@ export class MahoragaHarness extends DurableObject<Env> {
     console.log(`[${entry.timestamp}] [${agent}] ${action}`, JSON.stringify(details));
   }
 
+  /**
+   * Parse a JSON object from an LLM response tolerantly:
+   * strips markdown fences, and falls back to the first {...} block if the
+   * model wrapped the JSON in prose. Returns null when nothing parseable.
+   */
+  private parseJsonObject<T>(content: string): T | null {
+    if (!content) return null;
+    const cleaned = content.replace(/```json\n?|```/g, "").trim();
+    try {
+      return JSON.parse(cleaned) as T;
+    } catch {
+      const match = cleaned.match(/\{[\s\S]*\}/);
+      if (match) {
+        try {
+          return JSON.parse(match[0]) as T;
+        } catch {
+          // fall through
+        }
+      }
+      return null;
+    }
+  }
+
   public trackLLMCost(model: string, tokensIn: number, tokensOut: number): number {
     // USD per 1M tokens. Keys may be prefixed ("provider/model", AI SDK) or bare.
     const pricing: Record<string, { input: number; output: number }> = {
@@ -1298,11 +1340,13 @@ export class MahoragaHarness extends DurableObject<Env> {
       "gpt-4o": { input: 2.5, output: 10 },
       "gpt-4o-mini": { input: 0.15, output: 0.6 },
       // Google Gemini (AI SDK, "google/<model>")
-      "google/gemini-3.5-flash": { input: 1.5, output: 9 },
       "google/gemini-3.8-flash": { input: 0.75, output: 3.75 },
+      "google/gemini-3.5-flash": { input: 1.5, output: 9 },
+      "google/gemini-3.5-flash-lite": { input: 0.3, output: 2.5 },
       "google/gemini-2.5-flash-lite": { input: 0.3, output: 2.5 },
-      "gemini-3.5-flash": { input: 1.5, output: 9 },
       "gemini-3.8-flash": { input: 0.75, output: 3.75 },
+      "gemini-3.5-flash": { input: 1.5, output: 9 },
+      "gemini-3.5-flash-lite": { input: 0.3, output: 2.5 },
     };
     const bareModel = model.includes("/") ? model.split("/").slice(1).join("/") : model;
     const rates = pricing[model] ?? pricing[bareModel] ?? pricing["gpt-4o"]!;
