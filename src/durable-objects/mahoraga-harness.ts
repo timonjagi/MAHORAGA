@@ -40,7 +40,7 @@ import { classifySymbol, countGroupPositions } from "../strategy/default/helpers
 import { tickerCache } from "../strategy/default/helpers/ticker";
 import { runCryptoTrading } from "../strategy/default/rules/crypto-trading";
 import { findBestOptionsContract } from "../strategy/default/rules/options";
-import type { StrategyContext } from "../strategy/types";
+import type { StrategyContext, TechnicalsSummary } from "../strategy/types";
 
 // ============================================================================
 // DURABLE OBJECT CLASS
@@ -52,6 +52,9 @@ export class MahoragaHarness extends DurableObject<Env> {
   private _etDayFormatter: Intl.DateTimeFormat | null = null;
   private discordCooldowns: Map<string, number> = new Map();
   private readonly DISCORD_COOLDOWN_MS = 30 * 60 * 1000;
+  /** Short-lived cache of technical reads, keyed by symbol. */
+  private technicalsCache: Map<string, { summary: TechnicalsSummary | null; at: number }> = new Map();
+  private readonly TECHNICALS_CACHE_TTL_MS = 5 * 60 * 1000;
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -558,6 +561,32 @@ export class MahoragaHarness extends DurableObject<Env> {
     return results;
   }
 
+  /**
+   * Compute (and briefly cache) a compact technical read for a symbol.
+   * Shared by research and the buy gate so we don't refetch bars repeatedly.
+   * Returns null for crypto or when bars are unavailable.
+   */
+  private async getTechnicals(symbol: string): Promise<TechnicalsSummary | null> {
+    if (isCryptoSymbol(symbol, this.state.config.crypto_symbols || [])) return null;
+
+    const cached = this.technicalsCache.get(symbol);
+    if (cached && Date.now() - cached.at < this.TECHNICALS_CACHE_TTL_MS) {
+      return cached.summary;
+    }
+
+    let summary: TechnicalsSummary | null = null;
+    try {
+      const alpaca = createAlpacaProviders(this.env);
+      const start = new Date(Date.now() - 120 * 24 * 60 * 60 * 1000).toISOString();
+      const bars = await alpaca.marketData.getBars(symbol, "1Day", { start, limit: 100, adjustment: "split" });
+      summary = summarizeTechnicals(symbol, bars);
+    } catch {
+      summary = null;
+    }
+    this.technicalsCache.set(symbol, { summary, at: Date.now() });
+    return summary;
+  }
+
   private async callSignalResearch(
     ctx: StrategyContext,
     symbol: string,
@@ -582,15 +611,9 @@ export class MahoragaHarness extends DurableObject<Env> {
         const snapshot = await alpaca.marketData.getSnapshot(symbol).catch(() => null);
         price = snapshot?.latest_trade?.price || snapshot?.latest_quote?.ask_price || 0;
 
-        // Daily bars for a compact technical read (feeds directional context to
-        // the LLM so attention-only signals aren't bought against the trend).
-        try {
-          const start = new Date(Date.now() - 120 * 24 * 60 * 60 * 1000).toISOString();
-          const bars = await alpaca.marketData.getBars(symbol, "1Day", { start, limit: 100, adjustment: "split" });
-          technicals = summarizeTechnicals(symbol, bars) ?? undefined;
-        } catch {
-          technicals = undefined;
-        }
+        // Compact technical read, feeding directional context to the LLM so
+        // attention-only signals aren't bought against the trend.
+        technicals = (await this.getTechnicals(symbol)) ?? undefined;
       }
 
       const prompt = activeStrategy.prompts.researchSignal(symbol, sentiment, sources, price, ctx, technicals);
@@ -799,13 +822,14 @@ export class MahoragaHarness extends DurableObject<Env> {
   /**
    * Shared gate for every BUY path (signal research, analyst LLM, pre-market).
    *
-   * Enforces the long-only direction rule and portfolio concentration caps:
-   *  1. EVERY buy must have a positive per-signal research verdict of BUY. If a
-   *     symbol has no research yet (e.g. the batch analyst invented it), research
-   *     is performed on demand. SKIP/WAIT — or unresearchable — vetoes the buy.
-   *     This closes the gap where the analyst LLM could buy names the research
-   *     never evaluated, and where it bought against a WAIT verdict.
-   *  2. No more than `max_positions_per_group` in one correlated group.
+   * Direction policy (long-only), controlled by config.require_buy_verdict:
+   *  - strict: every buy needs a research verdict of BUY.
+   *  - relaxed (default): SKIP always blocks; BUY passes; WAIT or unresearched
+   *    picks pass ONLY when technicals confirm a bullish setup. The batch analyst
+   *    may originate trades again, but never against a bearish technical trend.
+   *
+   * Concentration: never more than `max_positions_per_group` in one correlated
+   * country/commodity group.
    *
    * Returns null when allowed, otherwise a human-readable block reason.
    */
@@ -815,27 +839,43 @@ export class MahoragaHarness extends DurableObject<Env> {
     positions: Position[],
     pendingGroupCounts: Map<string, number>
   ): Promise<string | null> {
-    // 1. Direction: require an explicit BUY verdict.
+    // 1. Direction.
     let research = this.state.signalResearch[symbol];
     if (!research) {
       const signal = this.state.signalCache.find((s) => s.symbol === symbol);
-      if (!signal) {
-        return "no signal or research for symbol";
+      if (signal) {
+        const fetched = await this.callSignalResearch(
+          ctx,
+          symbol,
+          signal.sentiment,
+          [signal.source_detail || signal.source]
+        );
+        research = fetched ?? undefined;
       }
-      const fetched = await this.callSignalResearch(
-        ctx,
-        symbol,
-        signal.sentiment,
-        [signal.source_detail || signal.source]
-      );
-      research = fetched ?? undefined;
     }
 
-    if (!research) {
-      return "research unavailable";
+    const requireVerdict = this.state.config.require_buy_verdict ?? false;
+
+    if (research?.verdict === "SKIP") {
+      // A hard reject is respected in both modes.
+      return `research verdict SKIP (confidence ${research.confidence})`;
     }
-    if (research.verdict !== "BUY") {
-      return `research verdict ${research.verdict} (confidence ${research.confidence})`;
+
+    if (research?.verdict === "BUY") {
+      // Explicitly approved — no technicals requirement.
+    } else if (requireVerdict) {
+      return research
+        ? `research verdict ${research.verdict} (confidence ${research.confidence})`
+        : "no research (strict mode requires a BUY verdict)";
+    } else {
+      // Relaxed mode: WAIT or unresearched requires bullish technicals.
+      const tech = await this.getTechnicals(symbol);
+      if (!tech) {
+        return "relaxed mode: no technicals to confirm (crypto/illiquid)";
+      }
+      if (tech.direction !== "bullish" && tech.trend !== "up") {
+        return `relaxed mode: technicals not bullish (direction=${tech.direction}, trend=${tech.trend})`;
+      }
     }
 
     // 2. Concentration: cap correlated positions.

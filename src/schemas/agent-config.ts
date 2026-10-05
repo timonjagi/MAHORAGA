@@ -13,6 +13,10 @@ export const AgentConfigSchema = z
     /** Max concurrent positions in a single correlated group (country/commodity).
      *  0 disables the cap. */
     max_positions_per_group: z.number().int().min(0).max(50),
+    /** When true, every buy must have a research verdict of BUY. When false
+     *  (relaxed), SKIP still blocks but WAIT/unresearched picks may proceed if
+     *  technicals confirm a bullish setup. */
+    require_buy_verdict: z.boolean(),
     min_sentiment_score: z.number().min(0).max(1),
     min_analyst_confidence: z.number().min(0).max(1),
 

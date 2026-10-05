@@ -58,6 +58,7 @@ export interface Config {
   max_position_value: number
   max_positions: number
   max_positions_per_group?: number
+  require_buy_verdict?: boolean
   min_sentiment_score: number
   min_analyst_confidence: number
   take_profit_pct: number

@@ -151,6 +151,18 @@ export function SettingsModal({ config, onSave, onClose }: SettingsModalProps) {
                 <p className="text-[9px] text-hud-text-dim mt-1">Cap correlated positions (e.g. Brazil, China, gold). 0 = off.</p>
               </div>
               <div>
+                <label className="flex items-center gap-2 cursor-pointer mt-5">
+                  <input
+                    type="checkbox"
+                    className="hud-input w-4 h-4"
+                    checked={localConfig.require_buy_verdict ?? false}
+                    onChange={e => handleChange('require_buy_verdict', e.target.checked)}
+                  />
+                  <span className="hud-label">Require BUY verdict</span>
+                </label>
+                <p className="text-[9px] text-hud-text-dim mt-1">Off = allow WAIT/unresearched picks when technicals confirm.</p>
+              </div>
+              <div>
                 <label className="hud-label block mb-1">Position Size (% of Cash)</label>
                 <input
                   type="number"

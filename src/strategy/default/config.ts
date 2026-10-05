@@ -57,6 +57,7 @@ export const DEFAULT_CONFIG: AgentConfig = {
   max_position_value: 5000,
   max_positions: 5,
   max_positions_per_group: 2,
+  require_buy_verdict: false,
   min_sentiment_score: 0.3,
   min_analyst_confidence: 0.6,
   take_profit_pct: 10,
