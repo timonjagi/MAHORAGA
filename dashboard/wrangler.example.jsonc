@@ -1,0 +1,14 @@
+{
+  // Cloudflare Pages config for the MAHORAGA dashboard.
+  // Copy to wrangler.jsonc (gitignored) or deploy directly:
+  //   npm run build
+  //   npx wrangler pages deploy dist --project-name mahoraga-dashboard
+  "$schema": "https://raw.githubusercontent.com/cloudflare/workers-sdk/main/packages/wrangler/config-schema.json",
+  "name": "mahoraga-dashboard",
+  "pages_build_output_dir": "dist",
+  "compatibility_date": "2024-12-01",
+  "vars": {
+    // Reverse-proxy target for /api/* (see functions/api/[[path]].ts)
+    "MAHORAGA_API_ORIGIN": "https://mahoraga.timonjagi.workers.dev"
+  }
+}

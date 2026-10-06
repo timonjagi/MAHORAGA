@@ -7,7 +7,8 @@
     "dev": "vite",
     "dev:remote": "MAHORAGA_API_URL=https://mahoraga.timonjagi.workers.dev vite",
     "build": "tsc -b && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "deploy": "npm run build && wrangler pages deploy dist --project-name mahoraga-dashboard --commit-dirty=true"
   },
   "dependencies": {
     "clsx": "^2.1.1",
