@@ -114,6 +114,12 @@ export interface TechnicalsSummary {
   /** Whether price is above the 50-day SMA */
   above_sma50: boolean | null;
   relative_volume: number | null;
+  /** SuperTrend(14,3) direction — the core trend filter from the Trinity ATR strategy */
+  supertrend_direction: "bullish" | "bearish" | null;
+  /** ADX(14) value, or null when not enough bars */
+  adx_14: number | null;
+  /** true = confirmed uptrend (ADX>=20, +DI>-DI), false = confirmed downtrend, null = weak/unavailable */
+  adx_uptrend: boolean | null;
   /** Human-readable bullet list of active technical signals */
   notes: string[];
 }
