@@ -51,7 +51,8 @@ async function gatherStockTwits(ctx: StrategyContext): Promise<Signal[]> {
     );
     if (!trendingRes) {
       ctx.log("StockTwits", "cloudflare_blocked", {
-        message: "StockTwits API unavailable (Cloudflare bot protection or subrequest limit) - using ApeWisdom/News/SEC",
+        message:
+          "StockTwits API unavailable (Cloudflare bot protection or subrequest limit) - using ApeWisdom/News/SEC",
       });
       return [];
     }

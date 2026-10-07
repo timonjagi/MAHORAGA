@@ -39,8 +39,7 @@ No directional sentiment is available. You MUST rely on the technicals and news 
     : `SENTIMENT: ${(sentiment * 100).toFixed(0)}% bullish (sources: ${sources.join(", ")})`;
 
   return {
-    system:
-      "You are a stock research analyst for a LONG-ONLY account. Be skeptical of hype. Output valid JSON only.",
+    system: "You are a stock research analyst for a LONG-ONLY account. Be skeptical of hype. Output valid JSON only.",
     user: `Should we BUY this stock? You may only go long.
 
 SYMBOL: ${symbol}

@@ -844,12 +844,9 @@ export class MahoragaHarness extends DurableObject<Env> {
     if (!research) {
       const signal = this.state.signalCache.find((s) => s.symbol === symbol);
       if (signal) {
-        const fetched = await this.callSignalResearch(
-          ctx,
-          symbol,
-          signal.sentiment,
-          [signal.source_detail || signal.source]
-        );
+        const fetched = await this.callSignalResearch(ctx, symbol, signal.sentiment, [
+          signal.source_detail || signal.source,
+        ]);
         research = fetched ?? undefined;
       }
     }

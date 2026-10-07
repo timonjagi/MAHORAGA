@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { Bar } from "./types";
 import { summarizeTechnicals } from "./technicals";
+import type { Bar } from "./types";
 
 function makeBars(prices: number[]): Bar[] {
   return prices.map((c, i) => ({

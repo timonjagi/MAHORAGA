@@ -34,12 +34,7 @@ describe("classifySymbol", () => {
 
 describe("countGroupPositions", () => {
   it("counts positions that fall into a group", () => {
-    const positions = [
-      { symbol: "EWZ" },
-      { symbol: "VALE" },
-      { symbol: "AAPL" },
-      { symbol: "FXI" },
-    ];
+    const positions = [{ symbol: "EWZ" }, { symbol: "VALE" }, { symbol: "AAPL" }, { symbol: "FXI" }];
     expect(countGroupPositions(positions, "brazil")).toBe(2);
     expect(countGroupPositions(positions, "china")).toBe(1);
     expect(countGroupPositions(positions, "japan")).toBe(0);
