@@ -75,6 +75,14 @@ describe("computeSuperTrend", () => {
     expect(down?.direction).toBe("bearish");
     expect(down?.value).toBeGreaterThan(140);
   });
+
+  it("reflects a reversal on the most recent bar (not a stale value)", () => {
+    // Steady uptrend, then a sharp final-bar gap down through the lower band.
+    const prices = Array.from({ length: 59 }, (_, i) => 100 + i * 0.5);
+    prices.push(60); // violent reversal bar
+    const st = computeSuperTrend(makeBars(prices));
+    expect(st?.direction).toBe("bearish");
+  });
 });
 
 describe("computeADX", () => {

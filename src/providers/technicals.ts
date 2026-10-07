@@ -176,7 +176,7 @@ export function computeSuperTrend(
 
   // Wilder-smoothed ATR series, starting at bar index 1 of `bars`.
   let atr = trs.slice(0, period).reduce((a, b) => a + b, 0) / period;
-  const atrAtBar: number[] = [atr]; // atrAtBar[k] is ATR at bar k + 1
+  const atrAtBar: number[] = [atr]; // atrAtBar[k] is ATR at bars index period + k
   for (let k = period; k < trs.length; k++) {
     atr = (atr * (period - 1) + trs[k]!) / period;
     atrAtBar.push(atr);
@@ -189,14 +189,15 @@ export function computeSuperTrend(
   let dir = 1;
   let value = Number.NaN;
 
+  // atrAtBar[k] is the ATR at bars[period + k] (trs[0..period-1] covers bars 1..period).
   for (let k = 0; k < atrAtBar.length; k++) {
-    const bar = bars[k + 1]!;
+    const bar = bars[period + k]!;
     const hl2 = (bar.h + bar.l) / 2;
     let up = hl2 - multiplier * atrAtBar[k]!;
     let dn = hl2 + multiplier * atrAtBar[k]!;
 
-    if (!Number.isNaN(prevUp)) {
-      const prevClose = bars[k]!.c;
+    if (k > 0) {
+      const prevClose = bars[period + k - 1]!.c;
       up = prevClose > prevUp ? Math.max(up, prevUp) : up;
       dn = prevClose < prevDn ? Math.min(dn, prevDn) : dn;
       dir = bar.c > prevDn ? -1 : bar.c < prevUp ? 1 : dir;
