@@ -30,6 +30,8 @@ TECHNICALS (daily):
 - MACD histogram: ${technicals.macd_histogram !== null ? technicals.macd_histogram.toFixed(3) : "n/a"}
 - Price vs 50-SMA: ${technicals.above_sma50 === null ? "n/a" : technicals.above_sma50 ? "above" : "below"}
 - Relative volume: ${technicals.relative_volume !== null ? technicals.relative_volume.toFixed(2) + "x" : "n/a"}
+- SuperTrend(14,3): ${technicals.supertrend_direction ?? "n/a"}
+- ADX(14): ${technicals.adx_14 !== null ? technicals.adx_14.toFixed(1) : "n/a"}${technicals.adx_uptrend === true ? " (confirming uptrend)" : technicals.adx_uptrend === false ? " (confirming downtrend)" : ""}
 - Active signals: ${technicals.notes.join("; ") || "none"}`
     : "\nTECHNICALS: unavailable";
 

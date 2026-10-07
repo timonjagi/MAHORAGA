@@ -24,6 +24,8 @@ export interface TechnicalIndicators {
   atr_14: number | null;
   volume_sma_20: number | null;
   relative_volume: number | null;
+  supertrend: { value: number; direction: "bullish" | "bearish" } | null;
+  adx: { adx: number; plus_di: number; minus_di: number } | null;
 }
 
 export interface Signal {
@@ -153,6 +155,126 @@ export function calculateATR(bars: Bar[], period: number = 14): number | null {
   return atr;
 }
 
+/**
+ * SuperTrend — ATR-band trend indicator (port of the Pine f_supertrend used by
+ * the Trinity ATR strategy). Returns the current band value and direction.
+ * direction "bullish" = price above the lower band (Pine dir == -1).
+ */
+export function computeSuperTrend(
+  bars: Bar[],
+  period: number = 14,
+  multiplier: number = 3
+): { value: number; direction: "bullish" | "bearish" } | null {
+  if (bars.length < period + 2) return null;
+
+  const trs: number[] = [];
+  for (let i = 1; i < bars.length; i++) {
+    const cur = bars[i]!;
+    const prev = bars[i - 1]!;
+    trs.push(Math.max(cur.h - cur.l, Math.abs(cur.h - prev.c), Math.abs(cur.l - prev.c)));
+  }
+
+  // Wilder-smoothed ATR series, starting at bar index 1 of `bars`.
+  let atr = trs.slice(0, period).reduce((a, b) => a + b, 0) / period;
+  const atrAtBar: number[] = [atr]; // atrAtBar[k] is ATR at bars index period + k
+  for (let k = period; k < trs.length; k++) {
+    atr = (atr * (period - 1) + trs[k]!) / period;
+    atrAtBar.push(atr);
+  }
+
+  // Faithful port of the Pine f_supertrend loop. Pine's `up` is the lower
+  // band, `dn` the upper band; dir == -1 means bullish (band below price).
+  let prevUp = Number.NaN;
+  let prevDn = Number.NaN;
+  let dir = 1;
+  let value = Number.NaN;
+
+  // atrAtBar[k] is the ATR at bars[period + k] (trs[0..period-1] covers bars 1..period).
+  for (let k = 0; k < atrAtBar.length; k++) {
+    const bar = bars[period + k]!;
+    const hl2 = (bar.h + bar.l) / 2;
+    let up = hl2 - multiplier * atrAtBar[k]!;
+    let dn = hl2 + multiplier * atrAtBar[k]!;
+
+    if (k > 0) {
+      const prevClose = bars[period + k - 1]!.c;
+      up = prevClose > prevUp ? Math.max(up, prevUp) : up;
+      dn = prevClose < prevDn ? Math.min(dn, prevDn) : dn;
+      dir = bar.c > prevDn ? -1 : bar.c < prevUp ? 1 : dir;
+    } else if (bar.c > dn) {
+      dir = -1;
+    } else if (bar.c < up) {
+      dir = 1;
+    }
+
+    value = dir === -1 ? up : dn;
+    prevUp = up;
+    prevDn = dn;
+  }
+
+  if (Number.isNaN(value)) return null;
+  return { value, direction: dir === -1 ? "bullish" : "bearish" };
+}
+
+/**
+ * ADX + directional indicators (Wilder). adx_bullish context comes from the
+ * caller comparing plus_di vs minus_di.
+ */
+export function computeADX(
+  bars: Bar[],
+  period: number = 14
+): { adx: number; plus_di: number; minus_di: number } | null {
+  if (bars.length < period * 2 + 1) return null;
+
+  const plusDM: number[] = [];
+  const minusDM: number[] = [];
+  const trs: number[] = [];
+  for (let i = 1; i < bars.length; i++) {
+    const cur = bars[i]!;
+    const prev = bars[i - 1]!;
+    const upMove = cur.h - prev.h;
+    const downMove = prev.l - cur.l;
+    plusDM.push(upMove > downMove && upMove > 0 ? upMove : 0);
+    minusDM.push(downMove > upMove && downMove > 0 ? downMove : 0);
+    trs.push(Math.max(cur.h - cur.l, Math.abs(cur.h - prev.c), Math.abs(cur.l - prev.c)));
+  }
+
+  const wilder = (arr: number[]): number[] => {
+    const out: number[] = [];
+    let sum = arr.slice(0, period).reduce((a, b) => a + b, 0);
+    out.push(sum);
+    for (let i = period; i < arr.length; i++) {
+      sum = sum - sum / period + arr[i]!;
+      out.push(sum);
+    }
+    return out;
+  };
+
+  const sPlus = wilder(plusDM);
+  const sMinus = wilder(minusDM);
+  const sTR = wilder(trs);
+
+  const dxs: number[] = [];
+  let lastPlusDI = 0;
+  let lastMinusDI = 0;
+  for (let i = 0; i < sTR.length; i++) {
+    const plusDI = sTR[i]! > 0 ? (100 * sPlus[i]!) / sTR[i]! : 0;
+    const minusDI = sTR[i]! > 0 ? (100 * sMinus[i]!) / sTR[i]! : 0;
+    lastPlusDI = plusDI;
+    lastMinusDI = minusDI;
+    const sum = plusDI + minusDI;
+    dxs.push(sum > 0 ? (100 * Math.abs(plusDI - minusDI)) / sum : 0);
+  }
+
+  if (dxs.length < period) return null;
+  let adx = dxs.slice(0, period).reduce((a, b) => a + b, 0) / period;
+  for (let i = period; i < dxs.length; i++) {
+    adx = (adx * (period - 1) + dxs[i]!) / period;
+  }
+
+  return { adx, plus_di: lastPlusDI, minus_di: lastMinusDI };
+}
+
 export function computeTechnicals(symbol: string, bars: Bar[]): TechnicalIndicators {
   const closes = bars.map((b) => b.c);
   const volumes = bars.map((b) => b.v);
@@ -177,6 +299,8 @@ export function computeTechnicals(symbol: string, bars: Bar[]): TechnicalIndicat
     atr_14: calculateATR(bars, 14),
     volume_sma_20: volumeSma,
     relative_volume: relativeVolume,
+    supertrend: computeSuperTrend(bars, 14, 3),
+    adx: computeADX(bars, 14),
   };
 }
 
@@ -260,6 +384,35 @@ export function detectSignals(technicals: TechnicalIndicators): Signal[] {
     }
   }
 
+  if (technicals.supertrend !== null) {
+    signals.push({
+      type: technicals.supertrend.direction === "bullish" ? "supertrend_bullish" : "supertrend_bearish",
+      direction: technicals.supertrend.direction,
+      strength: 0.5,
+      description: `SuperTrend(14,3) is ${technicals.supertrend.direction} (band ${technicals.supertrend.value.toFixed(2)})`,
+    });
+  }
+
+  if (technicals.adx !== null) {
+    const adxBullishTrend = technicals.adx.adx >= 20 && technicals.adx.plus_di > technicals.adx.minus_di;
+    const adxBearishTrend = technicals.adx.adx >= 20 && technicals.adx.minus_di > technicals.adx.plus_di;
+    if (adxBullishTrend) {
+      signals.push({
+        type: "adx_uptrend",
+        direction: "bullish",
+        strength: Math.min(1, technicals.adx.adx / 50),
+        description: `ADX ${technicals.adx.adx.toFixed(1)} with +DI > -DI (confirmed uptrend)`,
+      });
+    } else if (adxBearishTrend) {
+      signals.push({
+        type: "adx_downtrend",
+        direction: "bearish",
+        strength: Math.min(1, technicals.adx.adx / 50),
+        description: `ADX ${technicals.adx.adx.toFixed(1)} with -DI > +DI (confirmed downtrend)`,
+      });
+    }
+  }
+
   if (technicals.relative_volume !== null && technicals.relative_volume > 2) {
     signals.push({
       type: "high_volume",
@@ -286,6 +439,11 @@ export function summarizeTechnicals(
   macd_histogram: number | null;
   above_sma50: boolean | null;
   relative_volume: number | null;
+  supertrend_direction: "bullish" | "bearish" | null;
+  adx_14: number | null;
+  /** true when ADX >= 20 and +DI > -DI (confirmed uptrend); false when ADX >= 20
+   * and -DI > +DI (confirmed downtrend); null when ADX unavailable/weak. */
+  adx_uptrend: boolean | null;
   notes: string[];
 } | null {
   if (bars.length < 20) return null;
@@ -310,9 +468,20 @@ export function summarizeTechnicals(
 
   const aboveSma50 = t.sma_50 !== null ? t.price > t.sma_50 : null;
 
+  let adxUptrend: boolean | null = null;
+  if (t.adx !== null && t.adx.adx >= 20) {
+    adxUptrend = t.adx.plus_di > t.adx.minus_di;
+  }
+
   const notes = signals.slice(0, 4).map((s) => s.description);
   if (t.relative_volume !== null) {
     notes.push(`Relative volume ${t.relative_volume.toFixed(2)}x`);
+  }
+  if (t.supertrend !== null) {
+    notes.push(`SuperTrend ${t.supertrend.direction}`);
+  }
+  if (t.adx !== null) {
+    notes.push(`ADX ${t.adx.adx.toFixed(1)} (+DI ${t.adx.plus_di.toFixed(0)} / -DI ${t.adx.minus_di.toFixed(0)})`);
   }
 
   return {
@@ -322,6 +491,9 @@ export function summarizeTechnicals(
     macd_histogram: t.macd?.histogram ?? null,
     above_sma50: aboveSma50,
     relative_volume: t.relative_volume,
+    supertrend_direction: t.supertrend?.direction ?? null,
+    adx_14: t.adx?.adx ?? null,
+    adx_uptrend: adxUptrend,
     notes,
   };
 }

@@ -873,6 +873,14 @@ export class MahoragaHarness extends DurableObject<Env> {
       if (tech.direction !== "bullish" && tech.trend !== "up") {
         return `relaxed mode: technicals not bullish (direction=${tech.direction}, trend=${tech.trend})`;
       }
+      // Trinity ATR filter: never buy against the SuperTrend, and require
+      // ADX/DI to confirm an uptrend when it is available.
+      if (tech.supertrend_direction === "bearish") {
+        return "relaxed mode: SuperTrend is bearish";
+      }
+      if (tech.adx_uptrend === false) {
+        return `relaxed mode: ADX confirms downtrend (adx=${tech.adx_14?.toFixed(1) ?? "n/a"})`;
+      }
     }
 
     // 2. Concentration: cap correlated positions.
