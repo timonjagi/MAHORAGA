@@ -13,6 +13,9 @@ export const AgentConfigSchema = z
     /** Max concurrent positions in a single correlated group (country/commodity).
      *  0 disables the cap. */
     max_positions_per_group: z.number().int().min(0).max(50),
+    /** Minutes after an exit during which the same symbol cannot be rebought.
+     *  Prevents sell→rebuy churn when exit and entry logic disagree. 0 disables. */
+    rebuy_cooldown_minutes: z.number().int().min(0).max(1440),
     /** When true, every buy must have a research verdict of BUY. When false
      *  (relaxed), SKIP still blocks but WAIT/unresearched picks may proceed if
      *  technicals confirm a bullish setup. */
