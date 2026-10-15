@@ -35,7 +35,13 @@ import { createOpenAI } from "@ai-sdk/openai";
 import { createXai } from "@ai-sdk/xai";
 // Import after mocks
 import { defaultSettingsMiddleware, generateText, wrapLanguageModel } from "ai";
-import { AISDKProvider, createAISDKProvider, PROVIDER_MODELS, SUPPORTED_PROVIDERS } from "./ai-sdk";
+import {
+  AISDKProvider,
+  createAISDKProvider,
+  isQuotaErrorMessage,
+  PROVIDER_MODELS,
+  SUPPORTED_PROVIDERS,
+} from "./ai-sdk";
 
 const mockGenerateText = generateText as ReturnType<typeof vi.fn>;
 const mockWrapLanguageModel = wrapLanguageModel as ReturnType<typeof vi.fn>;
@@ -494,5 +500,28 @@ describe("AI SDK Provider", () => {
         })
       );
     });
+  });
+});
+
+describe("isQuotaErrorMessage", () => {
+  it("detects Gemini quota exhaustion", () => {
+    expect(
+      isQuotaErrorMessage(
+        "AI_RetryError: Failed after 3 attempts. Last error: You exceeded your current quota, please check your plan"
+      )
+    ).toBe(true);
+  });
+
+  it("detects 429 and rate-limit variants", () => {
+    expect(isQuotaErrorMessage("Request failed with status 429")).toBe(true);
+    expect(isQuotaErrorMessage("Rate limit exceeded, retry later")).toBe(true);
+    expect(isQuotaErrorMessage("RESOURCE_EXHAUSTED: quota exceeded")).toBe(true);
+    expect(isQuotaErrorMessage("Too many requests")).toBe(true);
+  });
+
+  it("rejects ordinary errors", () => {
+    expect(isQuotaErrorMessage("SyntaxError: Unexpected token in JSON")).toBe(false);
+    expect(isQuotaErrorMessage("AI_APICallError: model not found")).toBe(false);
+    expect(isQuotaErrorMessage("")).toBe(false);
   });
 });

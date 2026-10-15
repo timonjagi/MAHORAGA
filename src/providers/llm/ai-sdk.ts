@@ -22,6 +22,15 @@ export const SUPPORTED_PROVIDERS = {
 export type SupportedProvider = keyof typeof SUPPORTED_PROVIDERS;
 
 /**
+ * True when an LLM failure looks like quota exhaustion or rate limiting
+ * (Gemini free tier, 429s, etc.). Callers use this to arm a backoff window
+ * instead of burning retries that are guaranteed to fail.
+ */
+export function isQuotaErrorMessage(message: string): boolean {
+  return /quota|rate.?limit|too many requests|429|exhausted|RESOURCE_EXHAUSTED/i.test(message);
+}
+
+/**
  * Popular models per provider for dashboard UI
  */
 export const PROVIDER_MODELS: Record<SupportedProvider, string[]> = {
@@ -138,6 +147,9 @@ export class AISDKProvider implements LLMProvider {
         })),
         temperature: params.temperature ?? 0.7,
         maxOutputTokens: params.max_tokens ?? 1024,
+        // One retry only: quota errors fail fast so the caller can back off
+        // instead of burning 3 attempts per call.
+        maxRetries: 1,
       });
 
       return {

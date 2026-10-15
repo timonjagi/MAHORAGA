@@ -154,6 +154,13 @@ export interface AgentState {
   twitterConfirmations: Record<string, TwitterConfirmation>;
   twitterDailyReads: number;
   twitterDailyReadReset: number;
+  /** Epoch ms of the last exit (sell) per symbol — enforces the rebuy cooldown. */
+  lastExitAt: Record<string, number>;
+  /** Epoch ms when a buy order was submitted per symbol — guards against
+   *  duplicate buys while the fill is not yet visible in broker positions. */
+  pendingBuys: Record<string, number>;
+  /** Epoch ms until which LLM calls are skipped after quota/rate-limit errors. */
+  llmBackoffUntil: number;
   lastKnownNextOpenMs: number | null;
   premarketPlan: PremarketPlan | null;
   lastPremarketPlanDayEt: string | null;

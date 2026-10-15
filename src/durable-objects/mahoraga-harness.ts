@@ -22,6 +22,7 @@ import type {
 import type { Env } from "../env.d";
 import { getDefaultPolicyConfig } from "../policy/config";
 import { createAlpacaProviders } from "../providers/alpaca";
+import { isQuotaErrorMessage } from "../providers/llm/ai-sdk";
 import { createLLMProvider } from "../providers/llm/factory";
 import { summarizeTechnicals } from "../providers/technicals";
 import type { Account, LLMProvider, MarketClock, Position } from "../providers/types";
@@ -41,6 +42,12 @@ import { tickerCache } from "../strategy/default/helpers/ticker";
 import { runCryptoTrading } from "../strategy/default/rules/crypto-trading";
 import { findBestOptionsContract } from "../strategy/default/rules/options";
 import type { StrategyContext, TechnicalsSummary } from "../strategy/types";
+
+// How long a submitted-but-unfilled buy blocks rebuys of the same symbol.
+// Covers the fill-visibility race between 30s alarm cycles.
+const PENDING_BUY_TTL_MS = 15 * 60 * 1000;
+// How long to skip LLM calls after a quota/rate-limit error.
+const LLM_BACKOFF_MS = 60 * 60 * 1000;
 
 // ============================================================================
 // DURABLE OBJECT CLASS
@@ -193,7 +200,9 @@ export class MahoragaHarness extends DurableObject<Env> {
 
     const now = Date.now();
     const RESEARCH_INTERVAL_MS = 120_000;
-    const POSITION_RESEARCH_INTERVAL_MS = 300_000;
+    // Position research is the biggest LLM burner (one call per holding);
+    // 15 minutes is plenty — exits don't need fresher risk reads.
+    const POSITION_RESEARCH_INTERVAL_MS = 900_000;
     const premarketPlanWindowMinutes = Math.max(1, this.state.config.premarket_plan_window_minutes ?? 5);
     const marketOpenExecuteWindowMinutes = Math.max(0, this.state.config.market_open_execute_window_minutes ?? 2);
 
@@ -284,9 +293,15 @@ export class MahoragaHarness extends DurableObject<Env> {
 
         // Position research
         if (positions.length > 0 && now - this.state.lastPositionResearchRun >= POSITION_RESEARCH_INTERVAL_MS) {
-          for (const pos of positions) {
-            if (pos.asset_class !== "us_option") {
-              await this.callPositionResearch(ctx, pos);
+          if (this.isLLMBackedOff()) {
+            this.log("PositionResearch", "skipped_backoff", {
+              until: new Date(this.state.llmBackoffUntil).toISOString(),
+            });
+          } else {
+            for (const pos of positions) {
+              if (pos.asset_class !== "us_option") {
+                await this.callPositionResearch(ctx, pos);
+              }
             }
           }
           this.state.lastPositionResearchRun = now;
@@ -299,9 +314,13 @@ export class MahoragaHarness extends DurableObject<Env> {
             const ep = pos.avg_entry_price || pos.current_price;
             const plPct = ep > 0 ? ((pos.current_price - ep) / ep) * 100 : 0;
             if (plPct >= this.state.config.options_take_profit_pct) {
-              await ctx.broker.sell(pos.symbol, `Options take profit at +${plPct.toFixed(1)}%`);
+              if (await ctx.broker.sell(pos.symbol, `Options take profit at +${plPct.toFixed(1)}%`)) {
+                this.recordExit(pos.symbol);
+              }
             } else if (plPct <= -this.state.config.options_stop_loss_pct) {
-              await ctx.broker.sell(pos.symbol, `Options stop loss at ${plPct.toFixed(1)}%`);
+              if (await ctx.broker.sell(pos.symbol, `Options stop loss at ${plPct.toFixed(1)}%`)) {
+                this.recordExit(pos.symbol);
+              }
             }
           }
         }
@@ -498,6 +517,12 @@ export class MahoragaHarness extends DurableObject<Env> {
   // ============================================================================
 
   private async researchTopSignals(ctx: StrategyContext, limit = 5): Promise<ResearchResult[]> {
+    if (this.isLLMBackedOff()) {
+      this.log("SignalResearch", "skipped_backoff", {
+        until: new Date(this.state.llmBackoffUntil).toISOString(),
+      });
+      return [];
+    }
     const positions = await ctx.broker.getPositions();
     const heldSymbols = new Set(positions.map((p) => p.symbol));
 
@@ -596,7 +621,13 @@ export class MahoragaHarness extends DurableObject<Env> {
     if (!this._llm || !activeStrategy.prompts.researchSignal) return null;
 
     const cached = this.state.signalResearch[symbol];
-    const CACHE_TTL_MS = 180_000;
+    // Backed off (quota): return cached verdict if usable, else skip quietly.
+    // The buy gate treats missing research as "unavailable" and relaxed mode
+    // falls back to technicals, so a null here is safe.
+    if (this.isLLMBackedOff()) return cached ?? null;
+    // 15-minute verdict cache: research outputs change slowly, and re-hitting
+    // the LLM every 2-minute cycle burns quota for identical verdicts.
+    const CACHE_TTL_MS = 900_000;
     if (cached && Date.now() - cached.timestamp < CACHE_TTL_MS) return cached;
 
     try {
@@ -687,7 +718,9 @@ export class MahoragaHarness extends DurableObject<Env> {
 
       return result;
     } catch (error) {
-      this.log("SignalResearch", "error", { symbol, message: String(error) });
+      if (!this.noteLLMError("SignalResearch", `signal ${symbol}`, error)) {
+        this.log("SignalResearch", "error", { symbol, message: String(error) });
+      }
       return null;
     }
   }
@@ -736,7 +769,9 @@ export class MahoragaHarness extends DurableObject<Env> {
         risk: analysis.risk_level,
       });
     } catch (error) {
-      this.log("PositionResearch", "error", { symbol: position.symbol, message: String(error) });
+      if (!this.noteLLMError("PositionResearch", `position ${position.symbol}`, error)) {
+        this.log("PositionResearch", "error", { symbol: position.symbol, message: String(error) });
+      }
     }
   }
 
@@ -758,6 +793,12 @@ export class MahoragaHarness extends DurableObject<Env> {
   }> {
     if (!this._llm || !activeStrategy.prompts.analyzeSignals || signals.length === 0) {
       return { recommendations: [], market_summary: "No signals to analyze", high_conviction: [] };
+    }
+    if (this.isLLMBackedOff()) {
+      this.log("Analyst", "skipped_backoff", {
+        until: new Date(this.state.llmBackoffUntil).toISOString(),
+      });
+      return { recommendations: [], market_summary: "LLM backed off (quota)", high_conviction: [] };
     }
 
     const prompt = activeStrategy.prompts.analyzeSignals(signals, positions, account, ctx);
@@ -810,7 +851,9 @@ export class MahoragaHarness extends DurableObject<Env> {
         high_conviction: analysis.high_conviction_plays || [],
       };
     } catch (error) {
-      this.log("Analyst", "error", { message: String(error) });
+      if (!this.noteLLMError("Analyst", "batch analysis", error)) {
+        this.log("Analyst", "error", { message: String(error) });
+      }
       return { recommendations: [], market_summary: `Analysis failed: ${error}`, high_conviction: [] };
     }
   }
@@ -818,6 +861,56 @@ export class MahoragaHarness extends DurableObject<Env> {
   // ============================================================================
   // ANALYST & TRADING — uses strategy selectEntries/selectExits + PolicyBroker
   // ============================================================================
+
+  /**
+   * Record a successful exit so the rebuy cooldown can be enforced.
+   * Call at every site where a sell order is confirmed.
+   */
+  private recordExit(symbol: string): void {
+    this.state.lastExitAt[symbol] = Date.now();
+  }
+
+  /**
+   * Drop pending-buy markers that are either visible in broker positions now
+   * (fill landed) or older than the in-flight window (order presumably failed
+   * or was cancelled — allow a retry).
+   */
+  private prunePendingBuys(positions: Position[]): void {
+    const held = new Set(positions.map((p) => p.symbol));
+    const now = Date.now();
+    for (const [symbol, submittedAt] of Object.entries(this.state.pendingBuys)) {
+      if (held.has(symbol) || now - submittedAt > PENDING_BUY_TTL_MS) {
+        delete this.state.pendingBuys[symbol];
+      }
+    }
+  }
+
+  /**
+   * True while LLM calls should be skipped after quota/rate-limit errors.
+   * Prevents burning free-tier quota on retries that are guaranteed to fail.
+   */
+  private isLLMBackedOff(): boolean {
+    return Date.now() < (this.state.llmBackoffUntil ?? 0);
+  }
+
+  /**
+   * Route an LLM failure through quota detection: quota/rate-limit errors arm
+   * a backoff window and are logged once as quota_backoff. Returns true when
+   * the failure was a quota error (already logged); otherwise returns false
+   * and the caller logs normally.
+   */
+  private noteLLMError(agent: string, context: string, error: unknown): boolean {
+    if (isQuotaErrorMessage(String(error))) {
+      this.state.llmBackoffUntil = Date.now() + LLM_BACKOFF_MS;
+      this.log(agent, "quota_backoff", {
+        context,
+        backoff_minutes: LLM_BACKOFF_MS / 60000,
+        message: String(error).slice(0, 200),
+      });
+      return true;
+    }
+    return false;
+  }
 
   /**
    * Shared gate for every BUY path (signal research, analyst LLM, pre-market).
@@ -839,6 +932,29 @@ export class MahoragaHarness extends DurableObject<Env> {
     positions: Position[],
     pendingGroupCounts: Map<string, number>
   ): Promise<string | null> {
+    // 0. Rebuy cooldown: don't re-enter a symbol we just exited. Exit and
+    //    entry logic can otherwise fight (stale-sell at 13:41 → rebuy 13:44).
+    const cooldownMs = (this.state.config.rebuy_cooldown_minutes ?? 0) * 60_000;
+    if (cooldownMs > 0) {
+      const exitedAt = this.state.lastExitAt[symbol] ?? 0;
+      const elapsed = Date.now() - exitedAt;
+      if (exitedAt > 0 && elapsed < cooldownMs) {
+        const minsLeft = Math.ceil((cooldownMs - elapsed) / 60000);
+        return `rebuy cooldown: exited recently, ${minsLeft}m remaining`;
+      }
+    }
+
+    // 0b. No adds: never buy a symbol already held, or with an order in
+    // flight. Fills can take longer than one alarm cycle to appear in broker
+    // positions, which previously caused duplicate $5k buys minutes apart.
+    if (positions.some((p) => p.symbol === symbol)) {
+      return "already holding this symbol";
+    }
+    const pendingAt = this.state.pendingBuys[symbol] ?? 0;
+    if (pendingAt > 0 && Date.now() - pendingAt < PENDING_BUY_TTL_MS) {
+      return "buy order already in flight";
+    }
+
     // 1. Direction.
     let research = this.state.signalResearch[symbol];
     if (!research) {
@@ -905,6 +1021,7 @@ export class MahoragaHarness extends DurableObject<Env> {
       ctx.broker.getPositions(),
       ctx.broker.getClock(),
     ]);
+    this.prunePendingBuys(positions);
 
     if (!account || !clock.is_open) {
       this.log("System", "analyst_skipped", { reason: "Account unavailable or market closed" });
@@ -922,7 +1039,10 @@ export class MahoragaHarness extends DurableObject<Env> {
     const exits = activeStrategy.selectExits(ctx, positions, account);
     for (const exit of exits) {
       const result = await ctx.broker.sell(exit.symbol, exit.reason);
-      if (result) heldSymbols.delete(exit.symbol);
+      if (result) {
+        heldSymbols.delete(exit.symbol);
+        this.recordExit(exit.symbol);
+      }
     }
 
     if (positions.length >= this.state.config.max_positions || this.state.signalCache.length === 0) return;
@@ -975,6 +1095,7 @@ export class MahoragaHarness extends DurableObject<Env> {
       if (result) {
         heldSymbols.add(entry.symbol);
         pendingBuys++;
+        this.state.pendingBuys[entry.symbol] = Date.now();
         const group = classifySymbol(entry.symbol);
         if (group) pendingGroupCounts.set(group, (pendingGroupCounts.get(group) ?? 0) + 1);
         const originalSignal = this.state.signalCache.find((s) => s.symbol === entry.symbol);
@@ -1020,6 +1141,7 @@ export class MahoragaHarness extends DurableObject<Env> {
         const result = await ctx.broker.sell(rec.symbol, `LLM recommendation: ${rec.reasoning}`);
         if (result) {
           heldSymbols.delete(rec.symbol);
+          this.recordExit(rec.symbol);
           this.log("Analyst", "llm_sell_executed", {
             symbol: rec.symbol,
             confidence: rec.confidence,
@@ -1053,6 +1175,7 @@ export class MahoragaHarness extends DurableObject<Env> {
           const aggregatedSocial = socialSnapshot[rec.symbol];
           heldSymbols.add(rec.symbol);
           pendingBuys++;
+          this.state.pendingBuys[rec.symbol] = Date.now();
           const group = classifySymbol(rec.symbol);
           if (group) pendingGroupCounts.set(group, (pendingGroupCounts.get(group) ?? 0) + 1);
           this.state.positionEntries[rec.symbol] = {
@@ -1172,6 +1295,7 @@ export class MahoragaHarness extends DurableObject<Env> {
 
     const [account, positions] = await Promise.all([ctx.broker.getAccount(), ctx.broker.getPositions()]);
     if (!account) return;
+    this.prunePendingBuys(positions);
 
     const heldSymbols = new Set(positions.map((p) => p.symbol));
     const socialSnapshot = this.getSocialSnapshotCache();
@@ -1185,7 +1309,9 @@ export class MahoragaHarness extends DurableObject<Env> {
     // Sells first
     for (const rec of this.state.premarketPlan.recommendations) {
       if (rec.action === "SELL" && rec.confidence >= this.state.config.min_analyst_confidence) {
-        await ctx.broker.sell(rec.symbol, `Pre-market plan: ${rec.reasoning}`);
+        if (await ctx.broker.sell(rec.symbol, `Pre-market plan: ${rec.reasoning}`)) {
+          this.recordExit(rec.symbol);
+        }
       }
     }
 
@@ -1212,6 +1338,7 @@ export class MahoragaHarness extends DurableObject<Env> {
         if (result) {
           heldSymbols.add(rec.symbol);
           pendingBuys++;
+          this.state.pendingBuys[rec.symbol] = Date.now();
           const group = classifySymbol(rec.symbol);
           if (group) pendingGroupCounts.set(group, (pendingGroupCounts.get(group) ?? 0) + 1);
           const originalSignal = this.state.signalCache.find((s) => s.symbol === rec.symbol);
